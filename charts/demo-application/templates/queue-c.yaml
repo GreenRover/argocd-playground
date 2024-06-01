@@ -1,0 +1,28 @@
+apiVersion: solace.broker.sbb.ch/v1alpha1
+kind: Queue
+metadata:
+  name: demo-c
+
+spec:
+  queueName: internal/${brokerTopicPrefix}/applicationAbc
+  accessType: EXCLUSIVE
+  deadMsgQueue: internal/${brokerTopicPrefix}/applicationAbcDMQ
+  ingressEnabled: true
+  egressEnabled: true
+  maxMsgSpoolUsage: 100
+  owner: DemoUserA
+  permission: NO_ACCESS
+  maxRedeliveryCount: 0
+  respectMsgPriorityEnabled: false
+  respectTtlEnabled: true
+  maxTtl: 15
+  consumerAckPropagationEnabled: true
+  maxBindCount: 1000
+  maxDeliveredUnackedMsgsPerFlow: 10000
+  maxMsgSize: 10000000
+  rejectLowPriorityMsgEnabled: false
+  rejectLowPriorityMsgLimit: 0
+  rejectMsgToSenderOnDiscardBehavior: NEVER
+  subscription:
+    - subscriptionTopic: "${abbL1}/${abbL2}/${abbL3}/*/v2/otherApi/>"
+    - subscriptionTopic: "${brokerTopicPrefix}/v2/foreigntApi/>"

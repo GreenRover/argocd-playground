@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-application
+  namespace: sttrs-argocd
+  finalizers:
+    # this will delete all resources when the application itself is removed
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    path: charts/demo-application
+    repoURL: https://github.com/GreenRover/argocd-playground.git
+    targetRevision: master
+  destination:
+    namespace: {{ .Values.destination.namespace }}
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    syncOptions:
+      - ApplyOutOfSyncOnly=false

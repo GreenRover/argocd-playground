@@ -1,0 +1,4 @@
+kubernetes:
+  url: ${OC_URL}
+  namespace: ${OC_NAME_SPACE}
+  authToken: ${OC_AUTH_TOKEN}

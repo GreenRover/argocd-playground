@@ -1,0 +1,208 @@
+apiVersion: argoproj.io/v1beta1
+kind: ArgoCD
+metadata:
+  name: argocd
+  namespace: sttrs-argocd
+spec:
+  # image:
+  #  # source: https://code.sbb.ch/projects/KD_PAAS/repos/argocd-image/browse
+  #  repository: &image paas.docker.bin.sbb.ch/paas/argocd
+  #  # ArgoCD server image name version
+  #  tag: &tag v2.9.10_v2
+  #image: "argoproj/argocd"
+  # https://code.sbb.ch/projects/KD_PAAS/repos/argocd-image/browse/Dockerfile
+  applicationInstanceLabelKey: applications.argoproj.io/app-name
+  controller:
+    processors: {}
+    resources:
+      limits:
+        cpu: 2
+        memory: 2Gi
+      requests:
+        cpu: 20m
+        memory: 256Mi
+    sharding: {}
+  extraConfig:
+    help.chatText: ""
+    help.chatUrl: ""
+  grafana:
+    enabled: false
+    ingress:
+      enabled: false
+    route:
+      enabled: false
+  ha:
+    enabled: false
+  initialSSHKnownHosts:
+    keys: |
+      [codessh.sbb.ch]:7999 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCpEG2NjlXSz42oLtU9QpZOGDGqnO+6ZMH2QZ5uZ+CPnsRG9nkb2okE79/IcTh6QhBj65YXwwZKdXlSzHZUKdzXDNanhtbTiLOq0yN7ABUM8cQ69kkvkevyN5tkTLB36SDMIHQoRlmpWciWyDIP3JGPbu35AtyL99vj7XlU5O7Vo13I8RmLiukTP6v9bRkWva7uXWtRLzZEdMB0ppne3TVIiSa/lzC5GZ0tekjLrYYtPsE7zqUZrECGYj1ShgEAIWC3rTAZJdIAPdgCRSTpTxYt+yhPEHnUA5Tyf8cdSV+HhJ88FoHzcFclNZyjvviVWjpabARMfPBS1yIquOpR2pT3
+      github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+      github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+      github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+  monitoring:
+    enabled: false
+  notifications:
+    enabled: false
+  prometheus:
+    enabled: false
+  rbac:
+    defaultPolicy: role:noaccess
+    policy: |
+      p, role:noaccess, *, *, *, deny
+      p, tektoncontroller, applications, get, */*, allow
+      p, tektoncontroller, applications, sync, */*, allow
+      g, ArgoReadOnly, role:readonly
+      g, ArgoAdmin, role:admin
+    scopes: '[roles, email]'
+  repo:
+    image: ""
+    logLevel: Debug
+    mountsatoken: true
+    replicas: 1
+    resources:
+      limits:
+        cpu: 1
+        ephemeral-storage: 512Mi
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        ephemeral-storage: 256Mi
+        memory: 128Mi
+    serviceaccount: argocd-argocd-server
+    version: ""
+    volumes:
+      - configMap:
+          name: cmp-plugin
+        name: cmp-plugin
+  #  application need to be hard refreshed when changed
+  resourceHealthChecks:
+    - check: |
+        hs = {
+          status = "Progressing",
+          message = "Tekton resource is running"
+        }
+        if obj.status ~= nil then
+          if obj.status.conditions ~= nil then
+            for i, condition in ipairs(obj.status.conditions) do
+              if condition.type == "Succeeded" and condition.status == "False" then
+                hs.status = "Degraded"
+                hs.message = condition.message
+                return hs
+              end
+              if condition.type == "Succeeded" and condition.status == "True" then
+                hs.status = "Healthy"
+                hs.message = condition.message
+                return hs
+              end
+            end
+          end
+        end
+        return hs
+      group: tekton.dev
+      kind: PipelineRun
+    - check: |
+        hs = {
+          status = "Progressing",
+          message = "Tekton resource is running"
+        }
+        if obj.status ~= nil then
+          if obj.status.conditions ~= nil then
+            for i, condition in ipairs(obj.status.conditions) do
+              if condition.type == "Succeeded" and condition.status == "False" then
+                hs.status = "Degraded"
+                hs.message = condition.message
+                return hs
+              end
+              if condition.type == "Succeeded" and condition.status == "True" then
+                hs.status = "Healthy"
+                hs.message = condition.message
+                return hs
+              end
+            end
+          end
+        end
+        return hs
+      group: tekton.dev
+      kind: TaskRun
+    - group: solace.broker.sbb.ch
+      kind: Broker
+      check: |
+        hs = {
+          status = "Progressing",
+          message = "New resources, not jet processed by operator"
+        }
+        if obj.status == nil then
+            return hs
+        end
+
+        hs.message = obj.status.statusMsg
+
+        if obj.status.status == "SYNCED" then
+            hs.status = "Healthy"
+            return hs
+        elseif obj.status.status == "PROGRESSING" then
+            hs.status = "Progressing"
+            return hs
+        elseif obj.status.status == "FAILED" then
+            hs.status = "Degraded"
+            return hs
+        elseif obj.status.status == "MISSING" then
+            hs.status = "Missing"
+            return hs
+        end
+
+        return hs
+    - group: solace.broker.sbb.ch
+      kind: Queue
+      check: |
+        hs = {
+          status = "Progressing",
+          message = "New resources, not jet processed by operator"
+        }
+        if obj.status == nil then
+            return hs
+        end
+
+        hs.message = obj.status.statusMsg
+
+        if obj.status.status == "SYNCED" then
+            hs.status = "Healthy"
+            return hs
+        elseif obj.status.status == "PROGRESSING" then
+            hs.status = "Progressing"
+            return hs
+        elseif obj.status.status == "FAILED" then
+            hs.status = "Degraded"
+            return hs
+        elseif obj.status.status == "MISSING" then
+            hs.status = "Missing"
+            return hs
+        end
+
+        return hs
+
+  server:
+    autoscale:
+      enabled: false
+    grpc:
+      ingress:
+        enabled: false
+    ingress:
+      enabled: false
+    insecure: true
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 10m
+        memory: 64Mi
+    route:
+      enabled: true
+      tls:
+        insecureEdgeTerminationPolicy: Redirect
+        termination: edge
+    service:
+      type: ""
+  tls:
+    ca: {}

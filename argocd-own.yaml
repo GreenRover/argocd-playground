@@ -1,0 +1,882 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: argocd-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-redis
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/name: argocd-redis
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      serviceAccountName: argocd-argocd-redis
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - resources: {}
+          terminationMessagePath: /dev/termination-log
+          name: redis
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 999
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 6379
+              protocol: TCP
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: argocd-operator-redis-tls
+              mountPath: /app/config/redis/tls
+          terminationMessagePolicy: File
+          image: 'redis@sha256:8061ca607db2a0c80010aeb5fc9bed0253448bc68711eaa14253a392f6c48280'
+          args:
+            - '--save'
+            - ''
+            - '--appendonly'
+            - 'no'
+      serviceAccount: argocd-argocd-redis
+      volumes:
+        - name: argocd-operator-redis-tls
+          secret:
+            secretName: argocd-operator-redis-tls
+            defaultMode: 420
+            optional: true
+      dnsPolicy: ClusterFirst
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: '1'
+  name: argocd-repo-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/name: argocd-repo-server
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      initContainers:
+        - resources:
+            limits:
+              cpu: '1'
+              ephemeral-storage: 512Mi
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 256Mi
+              memory: 128Mi
+          terminationMessagePath: /dev/termination-log
+          name: copyutil
+          command:
+            - cp
+            - '-n'
+            - /usr/local/bin/argocd
+            - /var/run/argocd/argocd-cmp-server
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: var-files
+              mountPath: /var/run/argocd
+          terminationMessagePolicy: File
+          image: 'quay.io/argoproj/argocd@sha256:83c86003b781d43d5a02a4fe80cec7f7a249e90ec07b72a9af6f9a6538e468ff'
+      serviceAccountName: argocd-argocd-server
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - resources:
+            limits:
+              cpu: '1'
+              ephemeral-storage: 512Mi
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 256Mi
+              memory: 128Mi
+          readinessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          terminationMessagePath: /dev/termination-log
+          name: argocd-repo-server
+          command:
+            - uid_entrypoint.sh
+            - argocd-repo-server
+            - '--redis'
+            - 'argocd-redis.own-argocd.svc.cluster.local:6379'
+            - '--loglevel'
+            - Debug
+            - '--logformat'
+            - text
+          livenessProbe:
+            tcpSocket:
+              port: 8081
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          ports:
+            - name: server
+              containerPort: 8081
+              protocol: TCP
+            - name: metrics
+              containerPort: 8084
+              protocol: TCP
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: ssh-known-hosts
+              mountPath: /app/config/ssh
+            - name: tls-certs
+              mountPath: /app/config/tls
+            - name: gpg-keys
+              mountPath: /app/config/gpg/source
+            - name: gpg-keyring
+              mountPath: /app/config/gpg/keys
+            - name: tmp
+              mountPath: /tmp
+            - name: argocd-repo-server-tls
+              mountPath: /app/config/reposerver/tls
+            - name: argocd-operator-redis-tls
+              mountPath: /app/config/reposerver/tls/redis
+            - name: plugins
+              mountPath: /home/argocd/cmp-server/plugins
+          terminationMessagePolicy: File
+          image: 'quay.io/argoproj/argocd@sha256:83c86003b781d43d5a02a4fe80cec7f7a249e90ec07b72a9af6f9a6538e468ff'
+      automountServiceAccountToken: true
+      serviceAccount: argocd-argocd-server
+      volumes:
+        - name: ssh-known-hosts
+          configMap:
+            name: argocd-ssh-known-hosts-cm
+            defaultMode: 420
+        - name: tls-certs
+          configMap:
+            name: argocd-tls-certs-cm
+            defaultMode: 420
+        - name: gpg-keys
+          configMap:
+            name: argocd-gpg-keys-cm
+            defaultMode: 420
+        - name: gpg-keyring
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: argocd-repo-server-tls
+          secret:
+            secretName: argocd-repo-server-tls
+            defaultMode: 420
+            optional: true
+        - name: argocd-operator-redis-tls
+          secret:
+            secretName: argocd-operator-redis-tls
+            defaultMode: 420
+            optional: true
+        - name: var-files
+          emptyDir: {}
+        - name: plugins
+          emptyDir: {}
+        - name: cmp-plugin
+          configMap:
+            name: cmp-plugin
+            defaultMode: 420
+      dnsPolicy: ClusterFirst
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: argocd-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/name: argocd-server
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      serviceAccountName: argocd-argocd-server
+      schedulerName: default-scheduler
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - resources:
+            limits:
+              cpu: 500m
+              memory: 256Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 3
+            timeoutSeconds: 1
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 3
+          terminationMessagePath: /dev/termination-log
+          name: argocd-server
+          command:
+            - argocd-server
+            - '--insecure'
+            - '--staticassets'
+            - /shared/app
+            - '--dex-server'
+            - 'https://argocd-dex-server.own-argocd.svc.cluster.local:5556'
+            - '--repo-server'
+            - 'argocd-repo-server.own-argocd.svc.cluster.local:8081'
+            - '--redis'
+            - 'argocd-redis.own-argocd.svc.cluster.local:6379'
+            - '--loglevel'
+            - info
+            - '--logformat'
+            - text
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 3
+            timeoutSeconds: 1
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 3
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+            - containerPort: 8083
+              protocol: TCP
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: ssh-known-hosts
+              mountPath: /app/config/ssh
+            - name: tls-certs
+              mountPath: /app/config/tls
+            - name: argocd-repo-server-tls
+              mountPath: /app/config/server/tls
+            - name: argocd-operator-redis-tls
+              mountPath: /app/config/server/tls/redis
+          terminationMessagePolicy: File
+          image: 'quay.io/argoproj/argocd@sha256:83c86003b781d43d5a02a4fe80cec7f7a249e90ec07b72a9af6f9a6538e468ff'
+      serviceAccount: argocd-argocd-server
+      volumes:
+        - name: ssh-known-hosts
+          configMap:
+            name: argocd-ssh-known-hosts-cm
+            defaultMode: 420
+        - name: tls-certs
+          configMap:
+            name: argocd-tls-certs-cm
+            defaultMode: 420
+        - name: argocd-repo-server-tls
+          secret:
+            secretName: argocd-repo-server-tls
+            defaultMode: 420
+            optional: true
+        - name: argocd-operator-redis-tls
+          secret:
+            secretName: argocd-operator-redis-tls
+            defaultMode: 420
+            optional: true
+      dnsPolicy: ClusterFirst
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+---
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: argocd-application-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-application-controller
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/name: argocd-application-controller
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      restartPolicy: Always
+      serviceAccountName: argocd-argocd-application-controller
+      schedulerName: default-scheduler
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: argocd-argocd-application-controller
+                topologyKey: kubernetes.io/hostname
+            - weight: 5
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/part-of: argocd
+                topologyKey: kubernetes.io/hostname
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - resources:
+            limits:
+              cpu: '2'
+              memory: 2Gi
+            requests:
+              cpu: 20m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+              scheme: HTTP
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          terminationMessagePath: /dev/termination-log
+          name: argocd-application-controller
+          command:
+            - argocd-application-controller
+            - '--operation-processors'
+            - '10'
+            - '--redis'
+            - 'argocd-redis.own-argocd.svc.cluster.local:6379'
+            - '--repo-server'
+            - 'argocd-repo-server.own-argocd.svc.cluster.local:8081'
+            - '--status-processors'
+            - '20'
+            - '--kubectl-parallelism-limit'
+            - '10'
+            - '--loglevel'
+            - info
+            - '--logformat'
+            - text
+          env:
+            - name: HOME
+              value: /home/argocd
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 8082
+              protocol: TCP
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: argocd-repo-server-tls
+              mountPath: /app/config/controller/tls
+            - name: argocd-operator-redis-tls
+              mountPath: /app/config/controller/tls/redis
+          terminationMessagePolicy: File
+          image: 'quay.io/argoproj/argocd@sha256:83c86003b781d43d5a02a4fe80cec7f7a249e90ec07b72a9af6f9a6538e468ff'
+      serviceAccount: argocd-argocd-application-controller
+      volumes:
+        - name: argocd-repo-server-tls
+          secret:
+            secretName: argocd-repo-server-tls
+            defaultMode: 420
+            optional: true
+        - name: argocd-operator-redis-tls
+          secret:
+            secretName: argocd-operator-redis-tls
+            defaultMode: 420
+            optional: true
+      dnsPolicy: ClusterFirst
+  serviceName: argocd-application-controller
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  revisionHistoryLimit: 10
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: argocd-server
+spec:
+  ipFamilies:
+    - IPv4
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 8080
+  internalTrafficPolicy: Cluster
+  type: ClusterIP
+  ipFamilyPolicy: SingleStack
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/name: argocd-server
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: argocd-redis
+spec:
+  ipFamilies:
+    - IPv4
+  ports:
+    - name: tcp-redis
+      protocol: TCP
+      port: 6379
+      targetPort: 6379
+  internalTrafficPolicy: Cluster
+  type: ClusterIP
+  ipFamilyPolicy: SingleStack
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/name: argocd-redis
+status:
+  loadBalancer: {}
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: argocd-repo-server
+spec:
+  ipFamilies:
+    - IPv4
+  ports:
+    - name: server
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
+    - name: metrics
+      protocol: TCP
+      port: 8084
+      targetPort: 8084
+  internalTrafficPolicy: Cluster
+  type: ClusterIP
+  ipFamilyPolicy: SingleStack
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/name: argocd-repo-server
+status:
+  loadBalancer: {}
+---
+kind: Route
+apiVersion: route.openshift.io/v1
+metadata:
+  name: argocd-server
+spec:
+  host: argocd-server-own-argocd.apps-crc.testing
+  to:
+    kind: Service
+    name: argocd-server
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: argocd-argocd-application-controller
+secrets:
+  - name: argocd-argocd-application-controller-dockercfg-bjdzs
+imagePullSecrets:
+  - name: argocd-argocd-application-controller-dockercfg-bjdzs
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: argocd-argocd-redis
+secrets:
+  - name: argocd-argocd-redis-dockercfg-kjsvz
+imagePullSecrets:
+  - name: argocd-argocd-redis-dockercfg-kjsvz
+---
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: argocd-argocd-server
+secrets:
+  - name: argocd-argocd-server-dockercfg-kpkcp
+imagePullSecrets:
+  - name: argocd-argocd-server-dockercfg-kpkcp
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: argocd-argocd-application-controller-dockercfg-bjdzs
+data:
+  .dockercfg: eyIxMC4yMTcuNS44MDo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxaGNIQnNhV05oZEdsdmJpMWpiMjUwY205c2JHVnlMWFJ2YTJWdUxUVnRiWG8ySWl3aWEzVmlaWEp1WlhSbGN5NXBieTl6WlhKMmFXTmxZV05qYjNWdWRDOXpaWEoyYVdObExXRmpZMjkxYm5RdWJtRnRaU0k2SW1GeVoyOWpaQzFoY21kdlkyUXRZWEJ3YkdsallYUnBiMjR0WTI5dWRISnZiR3hsY2lJc0ltdDFZbVZ5Ym1WMFpYTXVhVzh2YzJWeWRtbGpaV0ZqWTI5MWJuUXZjMlZ5ZG1salpTMWhZMk52ZFc1MExuVnBaQ0k2SW1OaE1EZ3pNV1V5TFRkak9HTXRORGM0TmkwNE5UTXpMVFkyTVRNMU9HRXlOMkkwT1NJc0luTjFZaUk2SW5ONWMzUmxiVHB6WlhKMmFXTmxZV05qYjNWdWREcHpkSFJ5Y3kxaGNtZHZZMlE2WVhKbmIyTmtMV0Z5WjI5alpDMWhjSEJzYVdOaGRHbHZiaTFqYjI1MGNtOXNiR1Z5SW4wLk1GZlBkR096OGRiTXF2aF9WODN1X0htbEFONG8tUV9tREJGV09yX3czOTdzVVNyYXJ0ZzctMTdndjFaU0tTV2tIWWxLNHNKN3N3ZE5oaUNLWGRyMEt6T01mMDktMVdJZlBUUk55SjJtbTdNa1VfeDl0MGlpaDlfdjV6dThrYXh2YmJjQ1RoRmxkVHlrNk55aHBOd0l3NVZDT1FST05SQlI0Zkl1bDk2S3RRX0JkNjdpbzZjcEdzT1R3bXVEaWtkNE1KRENOZ2hLbVZzcDhEWU5FQmdpUlNzZDczQk1vdEFGZG5Say1PR1ZTdDB3LU1pS2wwdkVvcUhwOVhRQV93R3JBX3NlWVBHUGw0dnpzX1JxLWJFVnpJUzBwMndCcllCd0p2Sk5idzhxQUNBQzVWTW5NYWNLYnY0OEl4OGU2RG9maHExSFpfemRaY3NvcjRsckc2VDBTa3ViRUNSS0JOQmlYOWVUNjBYQVNvNUN1d3RFWFRFOXNHdTA5Q3lnbGlTRElCbmFXQ0VMR0JJX1g5elhHRXRGQlpPV0drQ05pa0xUTUpkOE82X090cnhjV2k3T3ZLeW9WX2VETTlXcGlNVnBUMmRjM3BUdGw0TFpMSDZLQmdhS0ktdEZGLTF3NUtGbUgxTGtkZkNYS1FGZ1pNajFmNGNOQmRCWFVwd21pNGZ0QVZBTmM3UV9ncW8tRlR6b0NEclZybFpJdjJuajY3R2JjMlVKaUZLbTgxbVpKYWZObVV3b1M1S2FuOFFXNE1fRktuRjR6aE83bVF2eVhPLUlWQk9SbDlWTC1JMy1TUXZTU3V3ZWFQbE9vRExSVWZnSktFS1NvRVRNS3c1UXl2WG5OWHhlZ042eXNUbkdKZ3VwSDY3T3RtM2k5c24zdTVDdjVRYTF1d1VoTmY0IiwiZW1haWwiOiJzZXJ2aWNlYWNjb3VudEBleGFtcGxlLm9yZyIsImF1dGgiOiJjMlZ5ZG1salpXRmpZMjkxYm5RNlpYbEthR0pIWTJsUGFVcFRWWHBKTVU1cFNYTkpiWFJ3V2tOSk5rbHRlR2xOUXpGbVlURmtTbFpVVW1oa00yOTZZVEI0ZEdWRmRFZFRSWGhNVFVjNVJGRnNTbWhoTVd4dVZUSmFNVlpYTVVOV1ZHaG1VMWR6YVdaUkxtVjVTbkJqTTAxcFQybEtjbVJYU214amJUVnNaRWRXZWt3elRteGpibHB3V1RKV2FGa3lUblprVnpVd1NXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hWWlZ6RnNZek5DYUZreVZXbFBhVXA2WkVoU2VXTjVNV2hqYldSMldUSlJhVXhEU25Ka1YwcHNZMjAxYkdSSFZucE1iV3gyVEROT2JHTnVXbkJaTWxab1dUSk9kbVJYTlRCTU0wNXNXVE5LYkdSRE5YVlpWekZzU1dwdmFWbFlTbTVpTWs1clRGZEdlVm95T1dwYVF6Rm9ZMGhDYzJGWFRtaGtSMngyWW1reGFtSXlOVEJqYlRsellrZFdlVXhZVW5aaE1sWjFURlJXZEdKWWJ6SkphWGRwWVROV2FWcFlTblZhV0ZKc1kzazFjR0o1T1hwYVdFb3lZVmRPYkZsWFRtcGlNMVoxWkVNNWVscFlTakpoVjA1c1RGZEdhbGt5T1RGaWJsRjFZbTFHZEZwVFNUWkpiVVo1V2pJNWFscERNV2hqYldSMldUSlJkRmxZUW5kaVIyeHFXVmhTY0dJeU5IUlpNamwxWkVoS2RtSkhlR3hqYVVselNXMTBNVmx0Vm5saWJWWXdXbGhOZFdGWE9IWmpNbFo1Wkcxc2FscFhSbXBaTWpreFltNVJkbU15Vm5sa2JXeHFXbE14YUZreVRuWmtWelV3VEc1V2NGcERTVFpKYlU1b1RVUm5lazFYVlhsTVZHUnFUMGROZEU1RVl6Uk9hVEEwVGxSTmVreFVXVEpOVkUweFQwZEZlVTR5U1RCUFUwbHpTVzVPTVZscFNUWkpiazQxWXpOU2JHSlVjSHBhV0VveVlWZE9iRmxYVG1waU0xWjFaRVJ3ZW1SSVVubGplVEZvWTIxa2Rsa3lVVFpaV0VwdVlqSk9hMHhYUm5sYU1qbHFXa014YUdOSVFuTmhWMDVvWkVkc2RtSnBNV3BpTWpVd1kyMDVjMkpIVm5sSmJqQXVUVVptVUdSSFQzbzRaR0pOY1hab1gxWTRNM1ZmU0cxc1FVNDBieTFSWDIxRVFrWlhUM0pmZHpNNU4zTlZVM0poY25Sbk55MHhOMmQyTVZwVFMxTlhhMGhaYkVzMGMwbzNjM2RrVG1ocFEwdFlaSEl3UzNwUFRXWXdPUzB4VjBsbVVGUlNUbmxLTW0xdE4wMXJWVjk0T1hRd2FXbG9PVjkyTlhwMU9HdGhlSFppWW1ORFZHaEdiR1JVZVdzMlRubG9jRTUzU1hjMVZrTlBVVkpQVGxKQ1VqUm1TWFZzT1RaTGRGRmZRbVEyTjJsdk5tTndSM05QVkhkdGRVUnBhMlEwVFVwRVEwNW5hRXR0Vm5Od09FUlpUa1ZDWjJsU1UzTmtOek5DVFc5MFFVWmtibEpyTFU5SFZsTjBNSGN0VFdsTGJEQjJSVzl4U0hBNVdGRkJYM2RIY2tGZmMyVlpVRWRRYkRSMmVuTmZVbkV0WWtWV2VrbFRNSEF5ZDBKeVdVSjNTblpLVG1KM09IRkJRMEZETlZaTmJrMWhZMHRpZGpRNFNYZzRaVFpFYjJab2NURklXbDk2WkZwamMyOXlOR3h5UnpaVU1GTnJkV0pGUTFKTFFrNUNhVmc1WlZRMk1GaEJVMjgxUTNWM2RFVllWRVU1YzBkMU1EbERlV2RzYVZORVNVSnVZVmREUlV4SFFrbGZXRGw2V0VkRmRFWkNXazlYUjJ0RFRtbHJURlJOU21RNFR6WmZUM1J5ZUdOWGFUZFBka3Q1YjFaZlpVUk5PVmR3YVUxV2NGUXlaR016Y0ZSMGJEUk1Xa3hJTmt0Q1oyRkxTUzEwUmtZdE1YYzFTMFp0U0RGTWEyUm1RMWhMVVVabldrMXFNV1kwWTA1Q1pFSllWWEIzYldrMFpuUkJWa0ZPWXpkUlgyZHhieTFHVkhwdlEwUnlWbkpzV2tsMk1tNXFOamRIWW1NeVZVcHBSa3R0T0RGdFdrcGhaazV0VlhkdlV6VkxZVzQ0VVZjMFRWOUdTMjVHTkhwb1R6ZHRVWFo1V0U4dFNWWkNUMUpzT1ZaTUxVa3pMVk5SZGxOVGRYZGxZVkJzVDI5RVRGSlZabWRLUzBWTFUyOUZWRTFMZHpWUmVYWlliazVZZUdWblRqWjVjMVJ1UjBwbmRYQklOamRQZEcwemFUbHpiak4xTlVOMk5WRmhNWFYzVldoT1pqUT0ifSwiZGVmYXVsdC1yb3V0ZS1vcGVuc2hpZnQtaW1hZ2UtcmVnaXN0cnkuYXBwcy1jcmMudGVzdGluZyI6eyJ1c2VybmFtZSI6InNlcnZpY2VhY2NvdW50IiwicGFzc3dvcmQiOiJleUpoYkdjaU9pSlNVekkxTmlJc0ltdHBaQ0k2SW14aU1DMWZhMWRKVlRSaGQzb3phMHh0ZUV0R1NFeExNRzlEUWxKaGExbG5VMloxVlcxQ1ZUaGZTV3NpZlEuZXlKcGMzTWlPaUpyZFdKbGNtNWxkR1Z6TDNObGNuWnBZMlZoWTJOdmRXNTBJaXdpYTNWaVpYSnVaWFJsY3k1cGJ5OXpaWEoyYVdObFlXTmpiM1Z1ZEM5dVlXMWxjM0JoWTJVaU9pSnpkSFJ5Y3kxaGNtZHZZMlFpTENKcmRXSmxjbTVsZEdWekxtbHZMM05sY25acFkyVmhZMk52ZFc1MEwzTmxZM0psZEM1dVlXMWxJam9pWVhKbmIyTmtMV0Z5WjI5alpDMWhjSEJzYVdOaGRHbHZiaTFqYjI1MGNtOXNiR1Z5TFhSdmEyVnVMVFZ0YlhvMklpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl6WlhKMmFXTmxMV0ZqWTI5MWJuUXVibUZ0WlNJNkltRnlaMjlqWkMxaGNtZHZZMlF0WVhCd2JHbGpZWFJwYjI0dFkyOXVkSEp2Ykd4bGNpSXNJbXQxWW1WeWJtVjBaWE11YVc4dmMyVnlkbWxqWldGalkyOTFiblF2YzJWeWRtbGpaUzFoWTJOdmRXNTBMblZwWkNJNkltTmhNRGd6TVdVeUxUZGpPR010TkRjNE5pMDROVE16TFRZMk1UTTFPR0V5TjJJME9TSXNJbk4xWWlJNkluTjVjM1JsYlRwelpYSjJhV05sWVdOamIzVnVkRHB6ZEhSeWN5MWhjbWR2WTJRNllYSm5iMk5rTFdGeVoyOWpaQzFoY0hCc2FXTmhkR2x2YmkxamIyNTBjbTlzYkdWeUluMC5NRmZQZEdPejhkYk1xdmhfVjgzdV9IbWxBTjRvLVFfbURCRldPcl93Mzk3c1VTcmFydGc3LTE3Z3YxWlNLU1drSFlsSzRzSjdzd2ROaGlDS1hkcjBLek9NZjA5LTFXSWZQVFJOeUoybW03TWtVX3g5dDBpaWg5X3Y1enU4a2F4dmJiY0NUaEZsZFR5azZOeWhwTndJdzVWQ09RUk9OUkJSNGZJdWw5Nkt0UV9CZDY3aW82Y3BHc09Ud211RGlrZDRNSkRDTmdoS21Wc3A4RFlORUJnaVJTc2Q3M0JNb3RBRmRuUmstT0dWU3Qwdy1NaUtsMHZFb3FIcDlYUUFfd0dyQV9zZVlQR1BsNHZ6c19ScS1iRVZ6SVMwcDJ3QnJZQndKdkpOYnc4cUFDQUM1Vk1uTWFjS2J2NDhJeDhlNkRvZmhxMUhaX3pkWmNzb3I0bHJHNlQwU2t1YkVDUktCTkJpWDllVDYwWEFTbzVDdXd0RVhURTlzR3UwOUN5Z2xpU0RJQm5hV0NFTEdCSV9YOXpYR0V0RkJaT1dHa0NOaWtMVE1KZDhPNl9PdHJ4Y1dpN092S3lvVl9lRE05V3BpTVZwVDJkYzNwVHRsNExaTEg2S0JnYUtJLXRGRi0xdzVLRm1IMUxrZGZDWEtRRmdaTWoxZjRjTkJkQlhVcHdtaTRmdEFWQU5jN1FfZ3FvLUZUem9DRHJWcmxaSXYybmo2N0diYzJVSmlGS204MW1aSmFmTm1Vd29TNUthbjhRVzRNX0ZLbkY0emhPN21RdnlYTy1JVkJPUmw5VkwtSTMtU1F2U1N1d2VhUGxPb0RMUlVmZ0pLRUtTb0VUTUt3NVF5dlhuTlh4ZWdONnlzVG5HSmd1cEg2N090bTNpOXNuM3U1Q3Y1UWExdXdVaE5mNCIsImVtYWlsIjoic2VydmljZWFjY291bnRAZXhhbXBsZS5vcmciLCJhdXRoIjoiYzJWeWRtbGpaV0ZqWTI5MWJuUTZaWGxLYUdKSFkybFBhVXBUVlhwSk1VNXBTWE5KYlhSd1drTkpOa2x0ZUdsTlF6Rm1ZVEZrU2xaVVVtaGtNMjk2WVRCNGRHVkZkRWRUUlhoTVRVYzVSRkZzU21oaE1XeHVWVEphTVZaWE1VTldWR2htVTFkemFXWlJMbVY1U25Cak0wMXBUMmxLY21SWFNteGpiVFZzWkVkV2Vrd3pUbXhqYmxwd1dUSldhRmt5VG5aa1Z6VXdTV2wzYVdFelZtbGFXRXAxV2xoU2JHTjVOWEJpZVRsNldsaEtNbUZYVG14WlYwNXFZak5XZFdSRE9YVlpWekZzWXpOQ2FGa3lWV2xQYVVwNlpFaFNlV041TVdoamJXUjJXVEpSYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzV1ROS2JHUkROWFZaVnpGc1NXcHZhVmxZU201aU1rNXJURmRHZVZveU9XcGFRekZvWTBoQ2MyRlhUbWhrUjJ4Mllta3hhbUl5TlRCamJUbHpZa2RXZVV4WVVuWmhNbFoxVEZSV2RHSlliekpKYVhkcFlUTldhVnBZU25WYVdGSnNZM2sxY0dKNU9YcGFXRW95WVZkT2JGbFhUbXBpTTFaMVpFTTVlbHBZU2pKaFYwNXNURmRHYWxreU9URmlibEYxWW0xR2RGcFRTVFpKYlVaNVdqSTVhbHBETVdoamJXUjJXVEpSZEZsWVFuZGlSMnhxV1ZoU2NHSXlOSFJaTWpsMVpFaEtkbUpIZUd4amFVbHpTVzEwTVZsdFZubGliVll3V2xoTmRXRlhPSFpqTWxaNVpHMXNhbHBYUm1wWk1qa3hZbTVSZG1NeVZubGtiV3hxV2xNeGFGa3lUblprVnpVd1RHNVdjRnBEU1RaSmJVNW9UVVJuZWsxWFZYbE1WR1JxVDBkTmRFNUVZelJPYVRBMFRsUk5la3hVV1RKTlZFMHhUMGRGZVU0eVNUQlBVMGx6U1c1T01WbHBTVFpKYms0MVl6TlNiR0pVY0hwYVdFb3lZVmRPYkZsWFRtcGlNMVoxWkVSd2VtUklVbmxqZVRGb1kyMWtkbGt5VVRaWldFcHVZakpPYTB4WFJubGFNamxxV2tNeGFHTklRbk5oVjA1b1pFZHNkbUpwTVdwaU1qVXdZMjA1YzJKSFZubEpiakF1VFVabVVHUkhUM280WkdKTmNYWm9YMVk0TTNWZlNHMXNRVTQwYnkxUlgyMUVRa1pYVDNKZmR6TTVOM05WVTNKaGNuUm5OeTB4TjJkMk1WcFRTMU5YYTBoWmJFczBjMG8zYzNka1RtaHBRMHRZWkhJd1MzcFBUV1l3T1MweFYwbG1VRlJTVG5sS01tMXROMDFyVlY5NE9YUXdhV2xvT1Y5Mk5YcDFPR3RoZUhaaVltTkRWR2hHYkdSVWVXczJUbmxvY0U1M1NYYzFWa05QVVZKUFRsSkNValJtU1hWc09UWkxkRkZmUW1RMk4ybHZObU53UjNOUFZIZHRkVVJwYTJRMFRVcEVRMDVuYUV0dFZuTndPRVJaVGtWQ1oybFNVM05rTnpOQ1RXOTBRVVprYmxKckxVOUhWbE4wTUhjdFRXbExiREIyUlc5eFNIQTVXRkZCWDNkSGNrRmZjMlZaVUVkUWJEUjJlbk5mVW5FdFlrVldla2xUTUhBeWQwSnlXVUozU25aS1RtSjNPSEZCUTBGRE5WWk5iazFoWTB0aWRqUTRTWGc0WlRaRWIyWm9jVEZJV2w5NlpGcGpjMjl5Tkd4eVJ6WlVNRk5yZFdKRlExSkxRazVDYVZnNVpWUTJNRmhCVTI4MVEzVjNkRVZZVkVVNWMwZDFNRGxEZVdkc2FWTkVTVUp1WVZkRFJVeEhRa2xmV0RsNldFZEZkRVpDV2s5WFIydERUbWxyVEZSTlNtUTRUelpmVDNSeWVHTlhhVGRQZGt0NWIxWmZaVVJOT1Zkd2FVMVdjRlF5WkdNemNGUjBiRFJNV2t4SU5rdENaMkZMU1MxMFJrWXRNWGMxUzBadFNERk1hMlJtUTFoTFVVWm5XazFxTVdZMFkwNUNaRUpZVlhCM2JXazBablJCVmtGT1l6ZFJYMmR4YnkxR1ZIcHZRMFJ5Vm5Kc1drbDJNbTVxTmpkSFltTXlWVXBwUmt0dE9ERnRXa3BoWms1dFZYZHZVelZMWVc0NFVWYzBUVjlHUzI1R05IcG9UemR0VVhaNVdFOHRTVlpDVDFKc09WWk1MVWt6TFZOUmRsTlRkWGRsWVZCc1QyOUVURkpWWm1kS1MwVkxVMjlGVkUxTGR6VlJlWFpZYms1WWVHVm5Ualo1YzFSdVIwcG5kWEJJTmpkUGRHMHphVGx6YmpOMU5VTjJOVkZoTVhWM1ZXaE9aalE9In0sImltYWdlLXJlZ2lzdHJ5Lm9wZW5zaGlmdC1pbWFnZS1yZWdpc3RyeS5zdmMuY2x1c3Rlci5sb2NhbDo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxaGNIQnNhV05oZEdsdmJpMWpiMjUwY205c2JHVnlMWFJ2YTJWdUxUVnRiWG8ySWl3aWEzVmlaWEp1WlhSbGN5NXBieTl6WlhKMmFXTmxZV05qYjNWdWRDOXpaWEoyYVdObExXRmpZMjkxYm5RdWJtRnRaU0k2SW1GeVoyOWpaQzFoY21kdlkyUXRZWEJ3YkdsallYUnBiMjR0WTI5dWRISnZiR3hsY2lJc0ltdDFZbVZ5Ym1WMFpYTXVhVzh2YzJWeWRtbGpaV0ZqWTI5MWJuUXZjMlZ5ZG1salpTMWhZMk52ZFc1MExuVnBaQ0k2SW1OaE1EZ3pNV1V5TFRkak9HTXRORGM0TmkwNE5UTXpMVFkyTVRNMU9HRXlOMkkwT1NJc0luTjFZaUk2SW5ONWMzUmxiVHB6WlhKMmFXTmxZV05qYjNWdWREcHpkSFJ5Y3kxaGNtZHZZMlE2WVhKbmIyTmtMV0Z5WjI5alpDMWhjSEJzYVdOaGRHbHZiaTFqYjI1MGNtOXNiR1Z5SW4wLk1GZlBkR096OGRiTXF2aF9WODN1X0htbEFONG8tUV9tREJGV09yX3czOTdzVVNyYXJ0ZzctMTdndjFaU0tTV2tIWWxLNHNKN3N3ZE5oaUNLWGRyMEt6T01mMDktMVdJZlBUUk55SjJtbTdNa1VfeDl0MGlpaDlfdjV6dThrYXh2YmJjQ1RoRmxkVHlrNk55aHBOd0l3NVZDT1FST05SQlI0Zkl1bDk2S3RRX0JkNjdpbzZjcEdzT1R3bXVEaWtkNE1KRENOZ2hLbVZzcDhEWU5FQmdpUlNzZDczQk1vdEFGZG5Say1PR1ZTdDB3LU1pS2wwdkVvcUhwOVhRQV93R3JBX3NlWVBHUGw0dnpzX1JxLWJFVnpJUzBwMndCcllCd0p2Sk5idzhxQUNBQzVWTW5NYWNLYnY0OEl4OGU2RG9maHExSFpfemRaY3NvcjRsckc2VDBTa3ViRUNSS0JOQmlYOWVUNjBYQVNvNUN1d3RFWFRFOXNHdTA5Q3lnbGlTRElCbmFXQ0VMR0JJX1g5elhHRXRGQlpPV0drQ05pa0xUTUpkOE82X090cnhjV2k3T3ZLeW9WX2VETTlXcGlNVnBUMmRjM3BUdGw0TFpMSDZLQmdhS0ktdEZGLTF3NUtGbUgxTGtkZkNYS1FGZ1pNajFmNGNOQmRCWFVwd21pNGZ0QVZBTmM3UV9ncW8tRlR6b0NEclZybFpJdjJuajY3R2JjMlVKaUZLbTgxbVpKYWZObVV3b1M1S2FuOFFXNE1fRktuRjR6aE83bVF2eVhPLUlWQk9SbDlWTC1JMy1TUXZTU3V3ZWFQbE9vRExSVWZnSktFS1NvRVRNS3c1UXl2WG5OWHhlZ042eXNUbkdKZ3VwSDY3T3RtM2k5c24zdTVDdjVRYTF1d1VoTmY0IiwiZW1haWwiOiJzZXJ2aWNlYWNjb3VudEBleGFtcGxlLm9yZyIsImF1dGgiOiJjMlZ5ZG1salpXRmpZMjkxYm5RNlpYbEthR0pIWTJsUGFVcFRWWHBKTVU1cFNYTkpiWFJ3V2tOSk5rbHRlR2xOUXpGbVlURmtTbFpVVW1oa00yOTZZVEI0ZEdWRmRFZFRSWGhNVFVjNVJGRnNTbWhoTVd4dVZUSmFNVlpYTVVOV1ZHaG1VMWR6YVdaUkxtVjVTbkJqTTAxcFQybEtjbVJYU214amJUVnNaRWRXZWt3elRteGpibHB3V1RKV2FGa3lUblprVnpVd1NXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hWWlZ6RnNZek5DYUZreVZXbFBhVXA2WkVoU2VXTjVNV2hqYldSMldUSlJhVXhEU25Ka1YwcHNZMjAxYkdSSFZucE1iV3gyVEROT2JHTnVXbkJaTWxab1dUSk9kbVJYTlRCTU0wNXNXVE5LYkdSRE5YVlpWekZzU1dwdmFWbFlTbTVpTWs1clRGZEdlVm95T1dwYVF6Rm9ZMGhDYzJGWFRtaGtSMngyWW1reGFtSXlOVEJqYlRsellrZFdlVXhZVW5aaE1sWjFURlJXZEdKWWJ6SkphWGRwWVROV2FWcFlTblZhV0ZKc1kzazFjR0o1T1hwYVdFb3lZVmRPYkZsWFRtcGlNMVoxWkVNNWVscFlTakpoVjA1c1RGZEdhbGt5T1RGaWJsRjFZbTFHZEZwVFNUWkpiVVo1V2pJNWFscERNV2hqYldSMldUSlJkRmxZUW5kaVIyeHFXVmhTY0dJeU5IUlpNamwxWkVoS2RtSkhlR3hqYVVselNXMTBNVmx0Vm5saWJWWXdXbGhOZFdGWE9IWmpNbFo1Wkcxc2FscFhSbXBaTWpreFltNVJkbU15Vm5sa2JXeHFXbE14YUZreVRuWmtWelV3VEc1V2NGcERTVFpKYlU1b1RVUm5lazFYVlhsTVZHUnFUMGROZEU1RVl6Uk9hVEEwVGxSTmVreFVXVEpOVkUweFQwZEZlVTR5U1RCUFUwbHpTVzVPTVZscFNUWkpiazQxWXpOU2JHSlVjSHBhV0VveVlWZE9iRmxYVG1waU0xWjFaRVJ3ZW1SSVVubGplVEZvWTIxa2Rsa3lVVFpaV0VwdVlqSk9hMHhYUm5sYU1qbHFXa014YUdOSVFuTmhWMDVvWkVkc2RtSnBNV3BpTWpVd1kyMDVjMkpIVm5sSmJqQXVUVVptVUdSSFQzbzRaR0pOY1hab1gxWTRNM1ZmU0cxc1FVNDBieTFSWDIxRVFrWlhUM0pmZHpNNU4zTlZVM0poY25Sbk55MHhOMmQyTVZwVFMxTlhhMGhaYkVzMGMwbzNjM2RrVG1ocFEwdFlaSEl3UzNwUFRXWXdPUzB4VjBsbVVGUlNUbmxLTW0xdE4wMXJWVjk0T1hRd2FXbG9PVjkyTlhwMU9HdGhlSFppWW1ORFZHaEdiR1JVZVdzMlRubG9jRTUzU1hjMVZrTlBVVkpQVGxKQ1VqUm1TWFZzT1RaTGRGRmZRbVEyTjJsdk5tTndSM05QVkhkdGRVUnBhMlEwVFVwRVEwNW5hRXR0Vm5Od09FUlpUa1ZDWjJsU1UzTmtOek5DVFc5MFFVWmtibEpyTFU5SFZsTjBNSGN0VFdsTGJEQjJSVzl4U0hBNVdGRkJYM2RIY2tGZmMyVlpVRWRRYkRSMmVuTmZVbkV0WWtWV2VrbFRNSEF5ZDBKeVdVSjNTblpLVG1KM09IRkJRMEZETlZaTmJrMWhZMHRpZGpRNFNYZzRaVFpFYjJab2NURklXbDk2WkZwamMyOXlOR3h5UnpaVU1GTnJkV0pGUTFKTFFrNUNhVmc1WlZRMk1GaEJVMjgxUTNWM2RFVllWRVU1YzBkMU1EbERlV2RzYVZORVNVSnVZVmREUlV4SFFrbGZXRGw2V0VkRmRFWkNXazlYUjJ0RFRtbHJURlJOU21RNFR6WmZUM1J5ZUdOWGFUZFBka3Q1YjFaZlpVUk5PVmR3YVUxV2NGUXlaR016Y0ZSMGJEUk1Xa3hJTmt0Q1oyRkxTUzEwUmtZdE1YYzFTMFp0U0RGTWEyUm1RMWhMVVVabldrMXFNV1kwWTA1Q1pFSllWWEIzYldrMFpuUkJWa0ZPWXpkUlgyZHhieTFHVkhwdlEwUnlWbkpzV2tsMk1tNXFOamRIWW1NeVZVcHBSa3R0T0RGdFdrcGhaazV0VlhkdlV6VkxZVzQ0VVZjMFRWOUdTMjVHTkhwb1R6ZHRVWFo1V0U4dFNWWkNUMUpzT1ZaTUxVa3pMVk5SZGxOVGRYZGxZVkJzVDI5RVRGSlZabWRLUzBWTFUyOUZWRTFMZHpWUmVYWlliazVZZUdWblRqWjVjMVJ1UjBwbmRYQklOamRQZEcwemFUbHpiak4xTlVOMk5WRmhNWFYzVldoT1pqUT0ifSwiaW1hZ2UtcmVnaXN0cnkub3BlbnNoaWZ0LWltYWdlLXJlZ2lzdHJ5LnN2Yzo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxaGNIQnNhV05oZEdsdmJpMWpiMjUwY205c2JHVnlMWFJ2YTJWdUxUVnRiWG8ySWl3aWEzVmlaWEp1WlhSbGN5NXBieTl6WlhKMmFXTmxZV05qYjNWdWRDOXpaWEoyYVdObExXRmpZMjkxYm5RdWJtRnRaU0k2SW1GeVoyOWpaQzFoY21kdlkyUXRZWEJ3YkdsallYUnBiMjR0WTI5dWRISnZiR3hsY2lJc0ltdDFZbVZ5Ym1WMFpYTXVhVzh2YzJWeWRtbGpaV0ZqWTI5MWJuUXZjMlZ5ZG1salpTMWhZMk52ZFc1MExuVnBaQ0k2SW1OaE1EZ3pNV1V5TFRkak9HTXRORGM0TmkwNE5UTXpMVFkyTVRNMU9HRXlOMkkwT1NJc0luTjFZaUk2SW5ONWMzUmxiVHB6WlhKMmFXTmxZV05qYjNWdWREcHpkSFJ5Y3kxaGNtZHZZMlE2WVhKbmIyTmtMV0Z5WjI5alpDMWhjSEJzYVdOaGRHbHZiaTFqYjI1MGNtOXNiR1Z5SW4wLk1GZlBkR096OGRiTXF2aF9WODN1X0htbEFONG8tUV9tREJGV09yX3czOTdzVVNyYXJ0ZzctMTdndjFaU0tTV2tIWWxLNHNKN3N3ZE5oaUNLWGRyMEt6T01mMDktMVdJZlBUUk55SjJtbTdNa1VfeDl0MGlpaDlfdjV6dThrYXh2YmJjQ1RoRmxkVHlrNk55aHBOd0l3NVZDT1FST05SQlI0Zkl1bDk2S3RRX0JkNjdpbzZjcEdzT1R3bXVEaWtkNE1KRENOZ2hLbVZzcDhEWU5FQmdpUlNzZDczQk1vdEFGZG5Say1PR1ZTdDB3LU1pS2wwdkVvcUhwOVhRQV93R3JBX3NlWVBHUGw0dnpzX1JxLWJFVnpJUzBwMndCcllCd0p2Sk5idzhxQUNBQzVWTW5NYWNLYnY0OEl4OGU2RG9maHExSFpfemRaY3NvcjRsckc2VDBTa3ViRUNSS0JOQmlYOWVUNjBYQVNvNUN1d3RFWFRFOXNHdTA5Q3lnbGlTRElCbmFXQ0VMR0JJX1g5elhHRXRGQlpPV0drQ05pa0xUTUpkOE82X090cnhjV2k3T3ZLeW9WX2VETTlXcGlNVnBUMmRjM3BUdGw0TFpMSDZLQmdhS0ktdEZGLTF3NUtGbUgxTGtkZkNYS1FGZ1pNajFmNGNOQmRCWFVwd21pNGZ0QVZBTmM3UV9ncW8tRlR6b0NEclZybFpJdjJuajY3R2JjMlVKaUZLbTgxbVpKYWZObVV3b1M1S2FuOFFXNE1fRktuRjR6aE83bVF2eVhPLUlWQk9SbDlWTC1JMy1TUXZTU3V3ZWFQbE9vRExSVWZnSktFS1NvRVRNS3c1UXl2WG5OWHhlZ042eXNUbkdKZ3VwSDY3T3RtM2k5c24zdTVDdjVRYTF1d1VoTmY0IiwiZW1haWwiOiJzZXJ2aWNlYWNjb3VudEBleGFtcGxlLm9yZyIsImF1dGgiOiJjMlZ5ZG1salpXRmpZMjkxYm5RNlpYbEthR0pIWTJsUGFVcFRWWHBKTVU1cFNYTkpiWFJ3V2tOSk5rbHRlR2xOUXpGbVlURmtTbFpVVW1oa00yOTZZVEI0ZEdWRmRFZFRSWGhNVFVjNVJGRnNTbWhoTVd4dVZUSmFNVlpYTVVOV1ZHaG1VMWR6YVdaUkxtVjVTbkJqTTAxcFQybEtjbVJYU214amJUVnNaRWRXZWt3elRteGpibHB3V1RKV2FGa3lUblprVnpVd1NXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hWWlZ6RnNZek5DYUZreVZXbFBhVXA2WkVoU2VXTjVNV2hqYldSMldUSlJhVXhEU25Ka1YwcHNZMjAxYkdSSFZucE1iV3gyVEROT2JHTnVXbkJaTWxab1dUSk9kbVJYTlRCTU0wNXNXVE5LYkdSRE5YVlpWekZzU1dwdmFWbFlTbTVpTWs1clRGZEdlVm95T1dwYVF6Rm9ZMGhDYzJGWFRtaGtSMngyWW1reGFtSXlOVEJqYlRsellrZFdlVXhZVW5aaE1sWjFURlJXZEdKWWJ6SkphWGRwWVROV2FWcFlTblZhV0ZKc1kzazFjR0o1T1hwYVdFb3lZVmRPYkZsWFRtcGlNMVoxWkVNNWVscFlTakpoVjA1c1RGZEdhbGt5T1RGaWJsRjFZbTFHZEZwVFNUWkpiVVo1V2pJNWFscERNV2hqYldSMldUSlJkRmxZUW5kaVIyeHFXVmhTY0dJeU5IUlpNamwxWkVoS2RtSkhlR3hqYVVselNXMTBNVmx0Vm5saWJWWXdXbGhOZFdGWE9IWmpNbFo1Wkcxc2FscFhSbXBaTWpreFltNVJkbU15Vm5sa2JXeHFXbE14YUZreVRuWmtWelV3VEc1V2NGcERTVFpKYlU1b1RVUm5lazFYVlhsTVZHUnFUMGROZEU1RVl6Uk9hVEEwVGxSTmVreFVXVEpOVkUweFQwZEZlVTR5U1RCUFUwbHpTVzVPTVZscFNUWkpiazQxWXpOU2JHSlVjSHBhV0VveVlWZE9iRmxYVG1waU0xWjFaRVJ3ZW1SSVVubGplVEZvWTIxa2Rsa3lVVFpaV0VwdVlqSk9hMHhYUm5sYU1qbHFXa014YUdOSVFuTmhWMDVvWkVkc2RtSnBNV3BpTWpVd1kyMDVjMkpIVm5sSmJqQXVUVVptVUdSSFQzbzRaR0pOY1hab1gxWTRNM1ZmU0cxc1FVNDBieTFSWDIxRVFrWlhUM0pmZHpNNU4zTlZVM0poY25Sbk55MHhOMmQyTVZwVFMxTlhhMGhaYkVzMGMwbzNjM2RrVG1ocFEwdFlaSEl3UzNwUFRXWXdPUzB4VjBsbVVGUlNUbmxLTW0xdE4wMXJWVjk0T1hRd2FXbG9PVjkyTlhwMU9HdGhlSFppWW1ORFZHaEdiR1JVZVdzMlRubG9jRTUzU1hjMVZrTlBVVkpQVGxKQ1VqUm1TWFZzT1RaTGRGRmZRbVEyTjJsdk5tTndSM05QVkhkdGRVUnBhMlEwVFVwRVEwNW5hRXR0Vm5Od09FUlpUa1ZDWjJsU1UzTmtOek5DVFc5MFFVWmtibEpyTFU5SFZsTjBNSGN0VFdsTGJEQjJSVzl4U0hBNVdGRkJYM2RIY2tGZmMyVlpVRWRRYkRSMmVuTmZVbkV0WWtWV2VrbFRNSEF5ZDBKeVdVSjNTblpLVG1KM09IRkJRMEZETlZaTmJrMWhZMHRpZGpRNFNYZzRaVFpFYjJab2NURklXbDk2WkZwamMyOXlOR3h5UnpaVU1GTnJkV0pGUTFKTFFrNUNhVmc1WlZRMk1GaEJVMjgxUTNWM2RFVllWRVU1YzBkMU1EbERlV2RzYVZORVNVSnVZVmREUlV4SFFrbGZXRGw2V0VkRmRFWkNXazlYUjJ0RFRtbHJURlJOU21RNFR6WmZUM1J5ZUdOWGFUZFBka3Q1YjFaZlpVUk5PVmR3YVUxV2NGUXlaR016Y0ZSMGJEUk1Xa3hJTmt0Q1oyRkxTUzEwUmtZdE1YYzFTMFp0U0RGTWEyUm1RMWhMVVVabldrMXFNV1kwWTA1Q1pFSllWWEIzYldrMFpuUkJWa0ZPWXpkUlgyZHhieTFHVkhwdlEwUnlWbkpzV2tsMk1tNXFOamRIWW1NeVZVcHBSa3R0T0RGdFdrcGhaazV0VlhkdlV6VkxZVzQ0VVZjMFRWOUdTMjVHTkhwb1R6ZHRVWFo1V0U4dFNWWkNUMUpzT1ZaTUxVa3pMVk5SZGxOVGRYZGxZVkJzVDI5RVRGSlZabWRLUzBWTFUyOUZWRTFMZHpWUmVYWlliazVZZUdWblRqWjVjMVJ1UjBwbmRYQklOamRQZEcwemFUbHpiak4xTlVOMk5WRmhNWFYzVldoT1pqUT0ifX0=
+type: kubernetes.io/dockercfg
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: argocd-argocd-redis-dockercfg-kjsvz
+data:
+  .dockercfg: eyIxMC4yMTcuNS44MDo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxeVpXUnBjeTEwYjJ0bGJpMXROSEExYUNJc0ltdDFZbVZ5Ym1WMFpYTXVhVzh2YzJWeWRtbGpaV0ZqWTI5MWJuUXZjMlZ5ZG1salpTMWhZMk52ZFc1MExtNWhiV1VpT2lKaGNtZHZZMlF0WVhKbmIyTmtMWEpsWkdseklpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl6WlhKMmFXTmxMV0ZqWTI5MWJuUXVkV2xrSWpvaU5UY3lOVFkzWW1NdE9USmtOeTAwWkdNeExUbGpZamN0WW1aaVpXSXhNRE0zWTJNeklpd2ljM1ZpSWpvaWMzbHpkR1Z0T25ObGNuWnBZMlZoWTJOdmRXNTBPbk4wZEhKekxXRnlaMjlqWkRwaGNtZHZZMlF0WVhKbmIyTmtMWEpsWkdsekluMC5Ud0JfRUVZTVBhaVNVQ3R5LXE2YkItMTRnWjZlUkRDeG0wMHZQRlJaem9ybW4xNHpXbDhtQXpaN1NIcG1EWk1CTG5xbXdmR2RtTUJYd3lrQVl1aXNGZDdkNTJFOUt3NWtYci1HQzAxM2ZWUWdEMlJ6cGhsbEVfNkQ3WGt5ekVQaWhTVmZoMzBWUXhDTzhVbXJlMWRneTZRTHNtZ2xjZUFVaHdDc2NPbUVkTGpVeUxJdkt0VTRCV3NyN3NXNThVb3VVcDZKN0hWYjFDU0FpTUJicDMzczdQa0dDQ2tseDdkbTA5TVdsSXVNbjhEbjJzaHJDOERhMUM1dXphb2J2SkZWd0pjYnpOYXRmR2JKbG1BNE15dy1DS2E2NUwxVTc2QW43LW5KSG5GalBTMUl5QkVpWFVOTUxybHBHNEJhLW5yOHhwU3VRMWVHNkVnX1NEZWxRMVc2V0xkXzRPZTJGT1J4SjNOcHpLelE5VkRqalpwbXNqTDhIZkVpSk1zSUVSWHZZZDBRc20tcmk1VExseGNhNnhIeE1ieFQtWC15MlNJVHRhbUlUY2NhOEhjVGtPTmZlZ2JxRGZIaU9vdVlJbEVuOEFjU25yaERxbVhYSFNuc0NoVmNjVG5WSmVMUHFPYi1GM2JJZnlqY3llWENsRGlmamhaUlNzVVY1bkFMWFQyQktYUWtTUFlMX0k4OUdBbkVrZm9fWndIZTYxRU1GT3cycDAzMHVaUGtCbmlSRDV2Ni1BZjFuTVlZb2JNVDRRa2stMFNMQmpHUm9WTC01Q01SNzN5Q015elZHMF9aWEUxNWR3NnNYay1RM0VycjNEcTA3MDQ0eFMxdklHUlA4MU11RC1nd2taQjRZTEpmb1lwMW5YYldEX1ktaXlGSGdFMXctUU5GQ0pZaHotRSIsImVtYWlsIjoic2VydmljZWFjY291bnRAZXhhbXBsZS5vcmciLCJhdXRoIjoiYzJWeWRtbGpaV0ZqWTI5MWJuUTZaWGxLYUdKSFkybFBhVXBUVlhwSk1VNXBTWE5KYlhSd1drTkpOa2x0ZUdsTlF6Rm1ZVEZrU2xaVVVtaGtNMjk2WVRCNGRHVkZkRWRUUlhoTVRVYzVSRkZzU21oaE1XeHVWVEphTVZaWE1VTldWR2htVTFkemFXWlJMbVY1U25Cak0wMXBUMmxLY21SWFNteGpiVFZzWkVkV2Vrd3pUbXhqYmxwd1dUSldhRmt5VG5aa1Z6VXdTV2wzYVdFelZtbGFXRXAxV2xoU2JHTjVOWEJpZVRsNldsaEtNbUZYVG14WlYwNXFZak5XZFdSRE9YVlpWekZzWXpOQ2FGa3lWV2xQYVVwNlpFaFNlV041TVdoamJXUjJXVEpSYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzV1ROS2JHUkROWFZaVnpGc1NXcHZhVmxZU201aU1rNXJURmRHZVZveU9XcGFRekY1V2xkU2NHTjVNVEJpTW5Sc1lta3hkRTVJUVRGaFEwbHpTVzEwTVZsdFZubGliVll3V2xoTmRXRlhPSFpqTWxaNVpHMXNhbHBYUm1wWk1qa3hZbTVSZG1NeVZubGtiV3hxV2xNeGFGa3lUblprVnpVd1RHMDFhR0pYVldsUGFVcG9ZMjFrZGxreVVYUlpXRXB1WWpKT2EweFlTbXhhUjJ4NlNXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hwYVdFb3lZVmRPYkV4WFJtcFpNamt4WW01UmRXUlhiR3RKYW05cFRsUmplVTVVV1ROWmJVMTBUMVJLYTA1NU1EQmFSMDE0VEZSc2FsbHFZM1JaYlZwcFdsZEplRTFFVFROWk1rMTZTV2wzYVdNelZtbEphbTlwWXpOc2VtUkhWblJQYms1c1kyNWFjRmt5Vm1oWk1rNTJaRmMxTUU5dVRqQmtTRXA2VEZkR2VWb3lPV3BhUkhCb1kyMWtkbGt5VVhSWldFcHVZakpPYTB4WVNteGFSMng2U1c0d0xsUjNRbDlGUlZsTlVHRnBVMVZEZEhrdGNUWmlRaTB4TkdkYU5tVlNSRU40YlRBd2RsQkdVbHA2YjNKdGJqRTBlbGRzT0cxQmVsbzNVMGh3YlVSYVRVSk1ibkZ0ZDJaSFpHMU5RbGgzZVd0QldYVnBjMFprTjJRMU1rVTVTM2MxYTFoeUxVZERNREV6WmxaUlowUXlVbnB3YUd4c1JWODJSRGRZYTNsNlJWQnBhRk5XWm1nek1GWlJlRU5QT0ZWdGNtVXhaR2Q1TmxGTWMyMW5iR05sUVZWb2QwTnpZMDl0UldSTWFsVjVURWwyUzNSVk5FSlhjM0kzYzFjMU9GVnZkVlZ3TmtvM1NGWmlNVU5UUVdsTlFtSndNek56TjFCclIwTkRhMng0TjJSdE1EbE5WMnhKZFUxdU9FUnVNbk5vY2tNNFJHRXhRelYxZW1GdlluWktSbFozU21OaWVrNWhkR1pIWWtwc2JVRTBUWGwzTFVOTFlUWTFUREZWTnpaQmJqY3Ria3BJYmtacVVGTXhTWGxDUldsWVZVNU5USEpzY0VjMFFtRXRibkk0ZUhCVGRWRXhaVWMyUldkZlUwUmxiRkV4VnpaWFRHUmZORTlsTWtaUFVuaEtNMDV3ZWt0NlVUbFdSR3BxV25CdGMycE1PRWhtUldsS1RYTkpSVkpZZGxsa01GRnpiUzF5YVRWVVRHeDRZMkUyZUVoNFRXSjRWQzFZTFhreVUwbFVkR0Z0U1ZSalkyRTRTR05VYTA5T1ptVm5ZbkZFWmtocFQyOTFXVWxzUlc0NFFXTlRibkpvUkhGdFdGaElVMjV6UTJoV1kyTlVibFpLWlV4UWNVOWlMVVl6WWtsbWVXcGplV1ZZUTJ4RWFXWnFhRnBTVTNOVlZqVnVRVXhZVkRKQ1MxaFJhMU5RV1V4ZlNUZzVSMEZ1Uld0bWIxOWFkMGhsTmpGRlRVWlBkekp3TURNd2RWcFFhMEp1YVZKRU5YWTJMVUZtTVc1TldWbHZZazFVTkZGcmF5MHdVMHhDYWtkU2IxWk1MVFZEVFZJM00zbERUWGw2Vmtjd1gxcFlSVEUxWkhjMmMxaHJMVkV6UlhKeU0wUnhNRGN3TkRSNFV6RjJTVWRTVURneFRYVkVMV2QzYTFwQ05GbE1TbVp2V1hBeGJsaGlWMFJmV1MxcGVVWklaMFV4ZHkxUlRrWkRTbGxvZWkxRiJ9LCJkZWZhdWx0LXJvdXRlLW9wZW5zaGlmdC1pbWFnZS1yZWdpc3RyeS5hcHBzLWNyYy50ZXN0aW5nIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxeVpXUnBjeTEwYjJ0bGJpMXROSEExYUNJc0ltdDFZbVZ5Ym1WMFpYTXVhVzh2YzJWeWRtbGpaV0ZqWTI5MWJuUXZjMlZ5ZG1salpTMWhZMk52ZFc1MExtNWhiV1VpT2lKaGNtZHZZMlF0WVhKbmIyTmtMWEpsWkdseklpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl6WlhKMmFXTmxMV0ZqWTI5MWJuUXVkV2xrSWpvaU5UY3lOVFkzWW1NdE9USmtOeTAwWkdNeExUbGpZamN0WW1aaVpXSXhNRE0zWTJNeklpd2ljM1ZpSWpvaWMzbHpkR1Z0T25ObGNuWnBZMlZoWTJOdmRXNTBPbk4wZEhKekxXRnlaMjlqWkRwaGNtZHZZMlF0WVhKbmIyTmtMWEpsWkdsekluMC5Ud0JfRUVZTVBhaVNVQ3R5LXE2YkItMTRnWjZlUkRDeG0wMHZQRlJaem9ybW4xNHpXbDhtQXpaN1NIcG1EWk1CTG5xbXdmR2RtTUJYd3lrQVl1aXNGZDdkNTJFOUt3NWtYci1HQzAxM2ZWUWdEMlJ6cGhsbEVfNkQ3WGt5ekVQaWhTVmZoMzBWUXhDTzhVbXJlMWRneTZRTHNtZ2xjZUFVaHdDc2NPbUVkTGpVeUxJdkt0VTRCV3NyN3NXNThVb3VVcDZKN0hWYjFDU0FpTUJicDMzczdQa0dDQ2tseDdkbTA5TVdsSXVNbjhEbjJzaHJDOERhMUM1dXphb2J2SkZWd0pjYnpOYXRmR2JKbG1BNE15dy1DS2E2NUwxVTc2QW43LW5KSG5GalBTMUl5QkVpWFVOTUxybHBHNEJhLW5yOHhwU3VRMWVHNkVnX1NEZWxRMVc2V0xkXzRPZTJGT1J4SjNOcHpLelE5VkRqalpwbXNqTDhIZkVpSk1zSUVSWHZZZDBRc20tcmk1VExseGNhNnhIeE1ieFQtWC15MlNJVHRhbUlUY2NhOEhjVGtPTmZlZ2JxRGZIaU9vdVlJbEVuOEFjU25yaERxbVhYSFNuc0NoVmNjVG5WSmVMUHFPYi1GM2JJZnlqY3llWENsRGlmamhaUlNzVVY1bkFMWFQyQktYUWtTUFlMX0k4OUdBbkVrZm9fWndIZTYxRU1GT3cycDAzMHVaUGtCbmlSRDV2Ni1BZjFuTVlZb2JNVDRRa2stMFNMQmpHUm9WTC01Q01SNzN5Q015elZHMF9aWEUxNWR3NnNYay1RM0VycjNEcTA3MDQ0eFMxdklHUlA4MU11RC1nd2taQjRZTEpmb1lwMW5YYldEX1ktaXlGSGdFMXctUU5GQ0pZaHotRSIsImVtYWlsIjoic2VydmljZWFjY291bnRAZXhhbXBsZS5vcmciLCJhdXRoIjoiYzJWeWRtbGpaV0ZqWTI5MWJuUTZaWGxLYUdKSFkybFBhVXBUVlhwSk1VNXBTWE5KYlhSd1drTkpOa2x0ZUdsTlF6Rm1ZVEZrU2xaVVVtaGtNMjk2WVRCNGRHVkZkRWRUUlhoTVRVYzVSRkZzU21oaE1XeHVWVEphTVZaWE1VTldWR2htVTFkemFXWlJMbVY1U25Cak0wMXBUMmxLY21SWFNteGpiVFZzWkVkV2Vrd3pUbXhqYmxwd1dUSldhRmt5VG5aa1Z6VXdTV2wzYVdFelZtbGFXRXAxV2xoU2JHTjVOWEJpZVRsNldsaEtNbUZYVG14WlYwNXFZak5XZFdSRE9YVlpWekZzWXpOQ2FGa3lWV2xQYVVwNlpFaFNlV041TVdoamJXUjJXVEpSYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzV1ROS2JHUkROWFZaVnpGc1NXcHZhVmxZU201aU1rNXJURmRHZVZveU9XcGFRekY1V2xkU2NHTjVNVEJpTW5Sc1lta3hkRTVJUVRGaFEwbHpTVzEwTVZsdFZubGliVll3V2xoTmRXRlhPSFpqTWxaNVpHMXNhbHBYUm1wWk1qa3hZbTVSZG1NeVZubGtiV3hxV2xNeGFGa3lUblprVnpVd1RHMDFhR0pYVldsUGFVcG9ZMjFrZGxreVVYUlpXRXB1WWpKT2EweFlTbXhhUjJ4NlNXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hwYVdFb3lZVmRPYkV4WFJtcFpNamt4WW01UmRXUlhiR3RKYW05cFRsUmplVTVVV1ROWmJVMTBUMVJLYTA1NU1EQmFSMDE0VEZSc2FsbHFZM1JaYlZwcFdsZEplRTFFVFROWk1rMTZTV2wzYVdNelZtbEphbTlwWXpOc2VtUkhWblJQYms1c1kyNWFjRmt5Vm1oWk1rNTJaRmMxTUU5dVRqQmtTRXA2VEZkR2VWb3lPV3BhUkhCb1kyMWtkbGt5VVhSWldFcHVZakpPYTB4WVNteGFSMng2U1c0d0xsUjNRbDlGUlZsTlVHRnBVMVZEZEhrdGNUWmlRaTB4TkdkYU5tVlNSRU40YlRBd2RsQkdVbHA2YjNKdGJqRTBlbGRzT0cxQmVsbzNVMGh3YlVSYVRVSk1ibkZ0ZDJaSFpHMU5RbGgzZVd0QldYVnBjMFprTjJRMU1rVTVTM2MxYTFoeUxVZERNREV6WmxaUlowUXlVbnB3YUd4c1JWODJSRGRZYTNsNlJWQnBhRk5XWm1nek1GWlJlRU5QT0ZWdGNtVXhaR2Q1TmxGTWMyMW5iR05sUVZWb2QwTnpZMDl0UldSTWFsVjVURWwyUzNSVk5FSlhjM0kzYzFjMU9GVnZkVlZ3TmtvM1NGWmlNVU5UUVdsTlFtSndNek56TjFCclIwTkRhMng0TjJSdE1EbE5WMnhKZFUxdU9FUnVNbk5vY2tNNFJHRXhRelYxZW1GdlluWktSbFozU21OaWVrNWhkR1pIWWtwc2JVRTBUWGwzTFVOTFlUWTFUREZWTnpaQmJqY3Ria3BJYmtacVVGTXhTWGxDUldsWVZVNU5USEpzY0VjMFFtRXRibkk0ZUhCVGRWRXhaVWMyUldkZlUwUmxiRkV4VnpaWFRHUmZORTlsTWtaUFVuaEtNMDV3ZWt0NlVUbFdSR3BxV25CdGMycE1PRWhtUldsS1RYTkpSVkpZZGxsa01GRnpiUzF5YVRWVVRHeDRZMkUyZUVoNFRXSjRWQzFZTFhreVUwbFVkR0Z0U1ZSalkyRTRTR05VYTA5T1ptVm5ZbkZFWmtocFQyOTFXVWxzUlc0NFFXTlRibkpvUkhGdFdGaElVMjV6UTJoV1kyTlVibFpLWlV4UWNVOWlMVVl6WWtsbWVXcGplV1ZZUTJ4RWFXWnFhRnBTVTNOVlZqVnVRVXhZVkRKQ1MxaFJhMU5RV1V4ZlNUZzVSMEZ1Uld0bWIxOWFkMGhsTmpGRlRVWlBkekp3TURNd2RWcFFhMEp1YVZKRU5YWTJMVUZtTVc1TldWbHZZazFVTkZGcmF5MHdVMHhDYWtkU2IxWk1MVFZEVFZJM00zbERUWGw2Vmtjd1gxcFlSVEUxWkhjMmMxaHJMVkV6UlhKeU0wUnhNRGN3TkRSNFV6RjJTVWRTVURneFRYVkVMV2QzYTFwQ05GbE1TbVp2V1hBeGJsaGlWMFJmV1MxcGVVWklaMFV4ZHkxUlRrWkRTbGxvZWkxRiJ9LCJpbWFnZS1yZWdpc3RyeS5vcGVuc2hpZnQtaW1hZ2UtcmVnaXN0cnkuc3ZjLmNsdXN0ZXIubG9jYWw6NTAwMCI6eyJ1c2VybmFtZSI6InNlcnZpY2VhY2NvdW50IiwicGFzc3dvcmQiOiJleUpoYkdjaU9pSlNVekkxTmlJc0ltdHBaQ0k2SW14aU1DMWZhMWRKVlRSaGQzb3phMHh0ZUV0R1NFeExNRzlEUWxKaGExbG5VMloxVlcxQ1ZUaGZTV3NpZlEuZXlKcGMzTWlPaUpyZFdKbGNtNWxkR1Z6TDNObGNuWnBZMlZoWTJOdmRXNTBJaXdpYTNWaVpYSnVaWFJsY3k1cGJ5OXpaWEoyYVdObFlXTmpiM1Z1ZEM5dVlXMWxjM0JoWTJVaU9pSnpkSFJ5Y3kxaGNtZHZZMlFpTENKcmRXSmxjbTVsZEdWekxtbHZMM05sY25acFkyVmhZMk52ZFc1MEwzTmxZM0psZEM1dVlXMWxJam9pWVhKbmIyTmtMV0Z5WjI5alpDMXlaV1JwY3kxMGIydGxiaTF0TkhBMWFDSXNJbXQxWW1WeWJtVjBaWE11YVc4dmMyVnlkbWxqWldGalkyOTFiblF2YzJWeWRtbGpaUzFoWTJOdmRXNTBMbTVoYldVaU9pSmhjbWR2WTJRdFlYSm5iMk5rTFhKbFpHbHpJaXdpYTNWaVpYSnVaWFJsY3k1cGJ5OXpaWEoyYVdObFlXTmpiM1Z1ZEM5elpYSjJhV05sTFdGalkyOTFiblF1ZFdsa0lqb2lOVGN5TlRZM1ltTXRPVEprTnkwMFpHTXhMVGxqWWpjdFltWmlaV0l4TURNM1kyTXpJaXdpYzNWaUlqb2ljM2x6ZEdWdE9uTmxjblpwWTJWaFkyTnZkVzUwT25OMGRISnpMV0Z5WjI5alpEcGhjbWR2WTJRdFlYSm5iMk5rTFhKbFpHbHpJbjAuVHdCX0VFWU1QYWlTVUN0eS1xNmJCLTE0Z1o2ZVJEQ3htMDB2UEZSWnpvcm1uMTR6V2w4bUF6WjdTSHBtRFpNQkxucW13ZkdkbU1CWHd5a0FZdWlzRmQ3ZDUyRTlLdzVrWHItR0MwMTNmVlFnRDJSenBobGxFXzZEN1hreXpFUGloU1ZmaDMwVlF4Q084VW1yZTFkZ3k2UUxzbWdsY2VBVWh3Q3NjT21FZExqVXlMSXZLdFU0QldzcjdzVzU4VW91VXA2SjdIVmIxQ1NBaU1CYnAzM3M3UGtHQ0NrbHg3ZG0wOU1XbEl1TW44RG4yc2hyQzhEYTFDNXV6YW9idkpGVndKY2J6TmF0ZkdiSmxtQTRNeXctQ0thNjVMMVU3NkFuNy1uSkhuRmpQUzFJeUJFaVhVTk1McmxwRzRCYS1ucjh4cFN1UTFlRzZFZ19TRGVsUTFXNldMZF80T2UyRk9SeEozTnB6S3pROVZEampacG1zakw4SGZFaUpNc0lFUlh2WWQwUXNtLXJpNVRMbHhjYTZ4SHhNYnhULVgteTJTSVR0YW1JVGNjYThIY1RrT05mZWdicURmSGlPb3VZSWxFbjhBY1NucmhEcW1YWEhTbnNDaFZjY1RuVkplTFBxT2ItRjNiSWZ5amN5ZVhDbERpZmpoWlJTc1VWNW5BTFhUMkJLWFFrU1BZTF9JODlHQW5Fa2ZvX1p3SGU2MUVNRk93MnAwMzB1WlBrQm5pUkQ1djYtQWYxbk1ZWW9iTVQ0UWtrLTBTTEJqR1JvVkwtNUNNUjczeUNNeXpWRzBfWlhFMTVkdzZzWGstUTNFcnIzRHEwNzA0NHhTMXZJR1JQODFNdUQtZ3drWkI0WUxKZm9ZcDFuWGJXRF9ZLWl5RkhnRTF3LVFORkNKWWh6LUUiLCJlbWFpbCI6InNlcnZpY2VhY2NvdW50QGV4YW1wbGUub3JnIiwiYXV0aCI6ImMyVnlkbWxqWldGalkyOTFiblE2WlhsS2FHSkhZMmxQYVVwVFZYcEpNVTVwU1hOSmJYUndXa05KTmtsdGVHbE5RekZtWVRGa1NsWlVVbWhrTTI5NllUQjRkR1ZGZEVkVFJYaE1UVWM1UkZGc1NtaGhNV3h1VlRKYU1WWlhNVU5XVkdobVUxZHphV1pSTG1WNVNuQmpNMDFwVDJsS2NtUlhTbXhqYlRWc1pFZFdla3d6VG14amJscHdXVEpXYUZreVRuWmtWelV3U1dsM2FXRXpWbWxhV0VwMVdsaFNiR041TlhCaWVUbDZXbGhLTW1GWFRteFpWMDVxWWpOV2RXUkRPWFZaVnpGc1l6TkNhRmt5VldsUGFVcDZaRWhTZVdONU1XaGpiV1IyV1RKUmFVeERTbkprVjBwc1kyMDFiR1JIVm5wTWJXeDJURE5PYkdOdVduQlpNbFpvV1RKT2RtUlhOVEJNTTA1c1dUTktiR1JETlhWWlZ6RnNTV3B2YVZsWVNtNWlNazVyVEZkR2VWb3lPV3BhUXpGNVdsZFNjR041TVRCaU1uUnNZbWt4ZEU1SVFURmhRMGx6U1cxME1WbHRWbmxpYlZZd1dsaE5kV0ZYT0haak1sWjVaRzFzYWxwWFJtcFpNamt4WW01UmRtTXlWbmxrYld4cVdsTXhhRmt5VG5aa1Z6VXdURzAxYUdKWFZXbFBhVXBvWTIxa2Rsa3lVWFJaV0VwdVlqSk9hMHhZU214YVIyeDZTV2wzYVdFelZtbGFXRXAxV2xoU2JHTjVOWEJpZVRsNldsaEtNbUZYVG14WlYwNXFZak5XZFdSRE9YcGFXRW95WVZkT2JFeFhSbXBaTWpreFltNVJkV1JYYkd0SmFtOXBUbFJqZVU1VVdUTlpiVTEwVDFSS2EwNTVNREJhUjAxNFRGUnNhbGxxWTNSWmJWcHBXbGRKZUUxRVRUTlpNazE2U1dsM2FXTXpWbWxKYW05cFl6TnNlbVJIVm5SUGJrNXNZMjVhY0ZreVZtaFpNazUyWkZjMU1FOXVUakJrU0VwNlRGZEdlVm95T1dwYVJIQm9ZMjFrZGxreVVYUlpXRXB1WWpKT2EweFlTbXhhUjJ4NlNXNHdMbFIzUWw5RlJWbE5VR0ZwVTFWRGRIa3RjVFppUWkweE5HZGFObVZTUkVONGJUQXdkbEJHVWxwNmIzSnRiakUwZWxkc09HMUJlbG8zVTBod2JVUmFUVUpNYm5GdGQyWkhaRzFOUWxoM2VXdEJXWFZwYzBaa04yUTFNa1U1UzNjMWExaHlMVWRETURFelpsWlJaMFF5VW5wd2FHeHNSVjgyUkRkWWEzbDZSVkJwYUZOV1ptZ3pNRlpSZUVOUE9GVnRjbVV4WkdkNU5sRk1jMjFuYkdObFFWVm9kME56WTA5dFJXUk1hbFY1VEVsMlMzUlZORUpYYzNJM2MxYzFPRlZ2ZFZWd05rbzNTRlppTVVOVFFXbE5RbUp3TXpOek4xQnJSME5EYTJ4NE4yUnRNRGxOVjJ4SmRVMXVPRVJ1TW5Ob2NrTTRSR0V4UXpWMWVtRnZZblpLUmxaM1NtTmllazVoZEdaSFlrcHNiVUUwVFhsM0xVTkxZVFkxVERGVk56WkJiamN0YmtwSWJrWnFVRk14U1hsQ1JXbFlWVTVOVEhKc2NFYzBRbUV0Ym5JNGVIQlRkVkV4WlVjMlJXZGZVMFJsYkZFeFZ6WlhUR1JmTkU5bE1rWlBVbmhLTTA1d2VrdDZVVGxXUkdwcVduQnRjMnBNT0VobVJXbEtUWE5KUlZKWWRsbGtNRkZ6YlMxeWFUVlVUR3g0WTJFMmVFaDRUV0o0VkMxWUxYa3lVMGxVZEdGdFNWUmpZMkU0U0dOVWEwOU9abVZuWW5GRVpraHBUMjkxV1Vsc1JXNDRRV05UYm5Kb1JIRnRXRmhJVTI1elEyaFdZMk5VYmxaS1pVeFFjVTlpTFVZellrbG1lV3BqZVdWWVEyeEVhV1pxYUZwU1UzTlZWalZ1UVV4WVZESkNTMWhSYTFOUVdVeGZTVGc1UjBGdVJXdG1iMTlhZDBobE5qRkZUVVpQZHpKd01ETXdkVnBRYTBKdWFWSkVOWFkyTFVGbU1XNU5XVmx2WWsxVU5GRnJheTB3VTB4Q2FrZFNiMVpNTFRWRFRWSTNNM2xEVFhsNlZrY3dYMXBZUlRFMVpIYzJjMWhyTFZFelJYSnlNMFJ4TURjd05EUjRVekYyU1VkU1VEZ3hUWFZFTFdkM2ExcENORmxNU21adldYQXhibGhpVjBSZldTMXBlVVpJWjBVeGR5MVJUa1pEU2xsb2VpMUYifSwiaW1hZ2UtcmVnaXN0cnkub3BlbnNoaWZ0LWltYWdlLXJlZ2lzdHJ5LnN2Yzo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxeVpXUnBjeTEwYjJ0bGJpMXROSEExYUNJc0ltdDFZbVZ5Ym1WMFpYTXVhVzh2YzJWeWRtbGpaV0ZqWTI5MWJuUXZjMlZ5ZG1salpTMWhZMk52ZFc1MExtNWhiV1VpT2lKaGNtZHZZMlF0WVhKbmIyTmtMWEpsWkdseklpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl6WlhKMmFXTmxMV0ZqWTI5MWJuUXVkV2xrSWpvaU5UY3lOVFkzWW1NdE9USmtOeTAwWkdNeExUbGpZamN0WW1aaVpXSXhNRE0zWTJNeklpd2ljM1ZpSWpvaWMzbHpkR1Z0T25ObGNuWnBZMlZoWTJOdmRXNTBPbk4wZEhKekxXRnlaMjlqWkRwaGNtZHZZMlF0WVhKbmIyTmtMWEpsWkdsekluMC5Ud0JfRUVZTVBhaVNVQ3R5LXE2YkItMTRnWjZlUkRDeG0wMHZQRlJaem9ybW4xNHpXbDhtQXpaN1NIcG1EWk1CTG5xbXdmR2RtTUJYd3lrQVl1aXNGZDdkNTJFOUt3NWtYci1HQzAxM2ZWUWdEMlJ6cGhsbEVfNkQ3WGt5ekVQaWhTVmZoMzBWUXhDTzhVbXJlMWRneTZRTHNtZ2xjZUFVaHdDc2NPbUVkTGpVeUxJdkt0VTRCV3NyN3NXNThVb3VVcDZKN0hWYjFDU0FpTUJicDMzczdQa0dDQ2tseDdkbTA5TVdsSXVNbjhEbjJzaHJDOERhMUM1dXphb2J2SkZWd0pjYnpOYXRmR2JKbG1BNE15dy1DS2E2NUwxVTc2QW43LW5KSG5GalBTMUl5QkVpWFVOTUxybHBHNEJhLW5yOHhwU3VRMWVHNkVnX1NEZWxRMVc2V0xkXzRPZTJGT1J4SjNOcHpLelE5VkRqalpwbXNqTDhIZkVpSk1zSUVSWHZZZDBRc20tcmk1VExseGNhNnhIeE1ieFQtWC15MlNJVHRhbUlUY2NhOEhjVGtPTmZlZ2JxRGZIaU9vdVlJbEVuOEFjU25yaERxbVhYSFNuc0NoVmNjVG5WSmVMUHFPYi1GM2JJZnlqY3llWENsRGlmamhaUlNzVVY1bkFMWFQyQktYUWtTUFlMX0k4OUdBbkVrZm9fWndIZTYxRU1GT3cycDAzMHVaUGtCbmlSRDV2Ni1BZjFuTVlZb2JNVDRRa2stMFNMQmpHUm9WTC01Q01SNzN5Q015elZHMF9aWEUxNWR3NnNYay1RM0VycjNEcTA3MDQ0eFMxdklHUlA4MU11RC1nd2taQjRZTEpmb1lwMW5YYldEX1ktaXlGSGdFMXctUU5GQ0pZaHotRSIsImVtYWlsIjoic2VydmljZWFjY291bnRAZXhhbXBsZS5vcmciLCJhdXRoIjoiYzJWeWRtbGpaV0ZqWTI5MWJuUTZaWGxLYUdKSFkybFBhVXBUVlhwSk1VNXBTWE5KYlhSd1drTkpOa2x0ZUdsTlF6Rm1ZVEZrU2xaVVVtaGtNMjk2WVRCNGRHVkZkRWRUUlhoTVRVYzVSRkZzU21oaE1XeHVWVEphTVZaWE1VTldWR2htVTFkemFXWlJMbVY1U25Cak0wMXBUMmxLY21SWFNteGpiVFZzWkVkV2Vrd3pUbXhqYmxwd1dUSldhRmt5VG5aa1Z6VXdTV2wzYVdFelZtbGFXRXAxV2xoU2JHTjVOWEJpZVRsNldsaEtNbUZYVG14WlYwNXFZak5XZFdSRE9YVlpWekZzWXpOQ2FGa3lWV2xQYVVwNlpFaFNlV041TVdoamJXUjJXVEpSYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzV1ROS2JHUkROWFZaVnpGc1NXcHZhVmxZU201aU1rNXJURmRHZVZveU9XcGFRekY1V2xkU2NHTjVNVEJpTW5Sc1lta3hkRTVJUVRGaFEwbHpTVzEwTVZsdFZubGliVll3V2xoTmRXRlhPSFpqTWxaNVpHMXNhbHBYUm1wWk1qa3hZbTVSZG1NeVZubGtiV3hxV2xNeGFGa3lUblprVnpVd1RHMDFhR0pYVldsUGFVcG9ZMjFrZGxreVVYUlpXRXB1WWpKT2EweFlTbXhhUjJ4NlNXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hwYVdFb3lZVmRPYkV4WFJtcFpNamt4WW01UmRXUlhiR3RKYW05cFRsUmplVTVVV1ROWmJVMTBUMVJLYTA1NU1EQmFSMDE0VEZSc2FsbHFZM1JaYlZwcFdsZEplRTFFVFROWk1rMTZTV2wzYVdNelZtbEphbTlwWXpOc2VtUkhWblJQYms1c1kyNWFjRmt5Vm1oWk1rNTJaRmMxTUU5dVRqQmtTRXA2VEZkR2VWb3lPV3BhUkhCb1kyMWtkbGt5VVhSWldFcHVZakpPYTB4WVNteGFSMng2U1c0d0xsUjNRbDlGUlZsTlVHRnBVMVZEZEhrdGNUWmlRaTB4TkdkYU5tVlNSRU40YlRBd2RsQkdVbHA2YjNKdGJqRTBlbGRzT0cxQmVsbzNVMGh3YlVSYVRVSk1ibkZ0ZDJaSFpHMU5RbGgzZVd0QldYVnBjMFprTjJRMU1rVTVTM2MxYTFoeUxVZERNREV6WmxaUlowUXlVbnB3YUd4c1JWODJSRGRZYTNsNlJWQnBhRk5XWm1nek1GWlJlRU5QT0ZWdGNtVXhaR2Q1TmxGTWMyMW5iR05sUVZWb2QwTnpZMDl0UldSTWFsVjVURWwyUzNSVk5FSlhjM0kzYzFjMU9GVnZkVlZ3TmtvM1NGWmlNVU5UUVdsTlFtSndNek56TjFCclIwTkRhMng0TjJSdE1EbE5WMnhKZFUxdU9FUnVNbk5vY2tNNFJHRXhRelYxZW1GdlluWktSbFozU21OaWVrNWhkR1pIWWtwc2JVRTBUWGwzTFVOTFlUWTFUREZWTnpaQmJqY3Ria3BJYmtacVVGTXhTWGxDUldsWVZVNU5USEpzY0VjMFFtRXRibkk0ZUhCVGRWRXhaVWMyUldkZlUwUmxiRkV4VnpaWFRHUmZORTlsTWtaUFVuaEtNMDV3ZWt0NlVUbFdSR3BxV25CdGMycE1PRWhtUldsS1RYTkpSVkpZZGxsa01GRnpiUzF5YVRWVVRHeDRZMkUyZUVoNFRXSjRWQzFZTFhreVUwbFVkR0Z0U1ZSalkyRTRTR05VYTA5T1ptVm5ZbkZFWmtocFQyOTFXVWxzUlc0NFFXTlRibkpvUkhGdFdGaElVMjV6UTJoV1kyTlVibFpLWlV4UWNVOWlMVVl6WWtsbWVXcGplV1ZZUTJ4RWFXWnFhRnBTVTNOVlZqVnVRVXhZVkRKQ1MxaFJhMU5RV1V4ZlNUZzVSMEZ1Uld0bWIxOWFkMGhsTmpGRlRVWlBkekp3TURNd2RWcFFhMEp1YVZKRU5YWTJMVUZtTVc1TldWbHZZazFVTkZGcmF5MHdVMHhDYWtkU2IxWk1MVFZEVFZJM00zbERUWGw2Vmtjd1gxcFlSVEUxWkhjMmMxaHJMVkV6UlhKeU0wUnhNRGN3TkRSNFV6RjJTVWRTVURneFRYVkVMV2QzYTFwQ05GbE1TbVp2V1hBeGJsaGlWMFJmV1MxcGVVWklaMFV4ZHkxUlRrWkRTbGxvZWkxRiJ9fQ==
+type: kubernetes.io/dockercfg
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: argocd-argocd-server-dockercfg-kpkcp
+data:
+  .dockercfg: eyIxMC4yMTcuNS44MDo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxelpYSjJaWEl0ZEc5clpXNHRNalZ3TW1vaUxDSnJkV0psY201bGRHVnpMbWx2TDNObGNuWnBZMlZoWTJOdmRXNTBMM05sY25acFkyVXRZV05qYjNWdWRDNXVZVzFsSWpvaVlYSm5iMk5rTFdGeVoyOWpaQzF6WlhKMlpYSWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObGNuWnBZMlV0WVdOamIzVnVkQzUxYVdRaU9pSTBNR0kxWVRVek1DMHlNemt3TFRReE0yVXRPRFE0T0MxbE1HTTNZVEE0TURBMk1UTWlMQ0p6ZFdJaU9pSnplWE4wWlcwNmMyVnlkbWxqWldGalkyOTFiblE2YzNSMGNuTXRZWEpuYjJOa09tRnlaMjlqWkMxaGNtZHZZMlF0YzJWeWRtVnlJbjAuTEItMmpIS1FYSEo3NXBaQkxCaDh0QUVnLTczeTBQeEpjZFdyRk5pR2JLV2NwdXY3WWxzM05BR1B1bEE5NHY1WjhfbEY4M1ZKWDJZOU56N3hBcC15SWxCaVRVSTAtcEpPYmZSMUhMa3kwdUlQS0U0eERiT0Z6MFFVZmhGM0hvUmdReGw2WVFHZXRobkpqWlUtSlFkclpDZnFwakZNa2swQnhCc1V0T1lDTGc5UG5OZXpBQVBHeFNRc0xwTVZ5Y3BnUTZ3ZVQyeFUxeHVOaHlSdXRXM1ZlWlFvQTJSZ1BhMG5CbndVd1VvNkdlYVJPbHY5QlpWTGQwa2pwTDZzRG5uSWpTZDFOZmVPYVJIWWVWSEJOMUpBdzZzMGoxVU1vU2ZSWmZEakI4YmJXc2tGSnIza3ROMGVuSFpTVUdmY0hiSWNwMHc3dERKM3pXdjAwUm9tNEdNU2hISXZrOW42dkd6aXAzQjFvMXVqY3lBRVN3QUxMMkRkSTBja2U4Z3pQbzVYY1hISzIzUnlhVlJWTUhMNnBMODlFNUwwYzdySzVxRnM3czdua19fNEZiZHVXNHhMbEk3cXZHakFOcHZnTURMSDROeXEyYVJJTVI5R3JHbkFVU2VSdVFLMDNWbVQ1Wk9LakJZODNfb281ZWVhbE5BSEtkZ0F1OWdRbDh6TXg0VEY0QmNrQVo2TW14UU5GMUt4TFBtVWNHd3V4RXlheHB0TUVzVU9QWGs2U2xJcnZEOFJveVgxLUt1dHpQSWl6UGZHSmZMa1JFaFMzYVhKcERLMGt5MGNJOFBRQ3BWdHA1QUNtWlFlcEIzR2hNak1XanJ3Ti1ncE9QR2N4ZlRKNWZLdVZ4eW5nV0NoWl9lbG03LTMyXzFzY2tCeDVaVmdleGtoeTBZNU00SF8wUFUiLCJlbWFpbCI6InNlcnZpY2VhY2NvdW50QGV4YW1wbGUub3JnIiwiYXV0aCI6ImMyVnlkbWxqWldGalkyOTFiblE2WlhsS2FHSkhZMmxQYVVwVFZYcEpNVTVwU1hOSmJYUndXa05KTmtsdGVHbE5RekZtWVRGa1NsWlVVbWhrTTI5NllUQjRkR1ZGZEVkVFJYaE1UVWM1UkZGc1NtaGhNV3h1VlRKYU1WWlhNVU5XVkdobVUxZHphV1pSTG1WNVNuQmpNMDFwVDJsS2NtUlhTbXhqYlRWc1pFZFdla3d6VG14amJscHdXVEpXYUZreVRuWmtWelV3U1dsM2FXRXpWbWxhV0VwMVdsaFNiR041TlhCaWVUbDZXbGhLTW1GWFRteFpWMDVxWWpOV2RXUkRPWFZaVnpGc1l6TkNhRmt5VldsUGFVcDZaRWhTZVdONU1XaGpiV1IyV1RKUmFVeERTbkprVjBwc1kyMDFiR1JIVm5wTWJXeDJURE5PYkdOdVduQlpNbFpvV1RKT2RtUlhOVEJNTTA1c1dUTktiR1JETlhWWlZ6RnNTV3B2YVZsWVNtNWlNazVyVEZkR2VWb3lPV3BhUXpGNldsaEtNbHBZU1hSa1J6bHlXbGMwZEUxcVZuZE5iVzlwVEVOS2NtUlhTbXhqYlRWc1pFZFdla3h0YkhaTU0wNXNZMjVhY0ZreVZtaFpNazUyWkZjMU1Fd3pUbXhqYmxwd1dUSlZkRmxYVG1waU0xWjFaRU0xZFZsWE1XeEphbTlwV1ZoS2JtSXlUbXRNVjBaNVdqSTVhbHBETVhwYVdFb3lXbGhKYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzWTI1YWNGa3lWWFJaVjA1cVlqTldkV1JETlRGaFYxRnBUMmxKTUUxSFNURlpWRlY2VFVNd2VVMTZhM2RNVkZGNFRUSlZkRTlFVVRSUFF6RnNUVWROTTFsVVFUUk5SRUV5VFZSTmFVeERTbnBrVjBscFQybEtlbVZZVGpCYVZ6QTJZekpXZVdSdGJHcGFWMFpxV1RJNU1XSnVVVFpqTTFJd1kyNU5kRmxZU201aU1rNXJUMjFHZVZveU9XcGFRekZvWTIxa2Rsa3lVWFJqTWxaNVpHMVdlVWx1TUM1TVFpMHlha2hMVVZoSVNqYzFjRnBDVEVKb09IUkJSV2N0TnpONU1GQjRTbU5rVjNKR1RtbEhZa3RYWTNCMWRqZFpiSE16VGtGSFVIVnNRVGswZGpWYU9GOXNSamd6VmtwWU1sazVUbm8zZUVGd0xYbEpiRUpwVkZWSk1DMXdTazlpWmxJeFNFeHJlVEIxU1ZCTFJUUjRSR0pQUm5vd1VWVm1hRVl6U0c5U1oxRjRiRFpaVVVkbGRHaHVTbXBhVlMxS1VXUnlXa05tY1hCcVJrMXJhekJDZUVKelZYUlBXVU5NWnpsUWJrNWxla0ZCVUVkNFUxRnpUSEJOVm5samNHZFJObmRsVkRKNFZURjRkVTVvZVZKMWRGY3pWbVZhVVc5Qk1sSm5VR0V3YmtKdWQxVjNWVzgyUjJWaFVrOXNkamxDV2xaTVpEQnJhbkJNTm5ORWJtNUphbE5rTVU1bVpVOWhVa2haWlZaSVFrNHhTa0YzTm5Nd2FqRlZUVzlUWmxKYVprUnFRamhpWWxkemEwWktjak5yZEU0d1pXNUlXbE5WUjJaalNHSkpZM0F3ZHpkMFJFb3plbGQyTURCU2IyMDBSMDFUYUVoSmRtczVialoyUjNwcGNETkNNVzh4ZFdwamVVRkZVM2RCVEV3eVJHUkpNR05yWlRobmVsQnZOVmhqV0VoTE1qTlNlV0ZXVWxaTlNFdzJjRXc0T1VVMVREQmpOM0pMTlhGR2N6ZHpOMjVyWDE4MFJtSmtkVmMwZUV4c1NUZHhka2RxUVU1d2RtZE5SRXhJTkU1NWNUSmhVa2xOVWpsSGNrZHVRVlZUWlZKMVVVc3dNMVp0VkRWYVQwdHFRbGs0TTE5dmJ6VmxaV0ZzVGtGSVMyUm5RWFU1WjFGc09IcE5lRFJVUmpSQ1kydEJXalpOYlhoUlRrWXhTM2hNVUcxVlkwZDNkWGhGZVdGNGNIUk5SWE5WVDFCWWF6WlRiRWx5ZGtRNFVtOTVXREV0UzNWMGVsQkphWHBRWmtkS1preHJVa1ZvVXpOaFdFcHdSRXN3YTNrd1kwazRVRkZEY0ZaMGNEVkJRMjFhVVdWd1FqTkhhRTFxVFZkcWNuZE9MV2R3VDFCSFkzaG1WRW8xWmt0MVZuaDVibWRYUTJoYVgyVnNiVGN0TXpKZk1YTmphMEo0TlZwV1oyVjRhMmg1TUZrMVRUUklYekJRVlE9PSJ9LCJkZWZhdWx0LXJvdXRlLW9wZW5zaGlmdC1pbWFnZS1yZWdpc3RyeS5hcHBzLWNyYy50ZXN0aW5nIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxelpYSjJaWEl0ZEc5clpXNHRNalZ3TW1vaUxDSnJkV0psY201bGRHVnpMbWx2TDNObGNuWnBZMlZoWTJOdmRXNTBMM05sY25acFkyVXRZV05qYjNWdWRDNXVZVzFsSWpvaVlYSm5iMk5rTFdGeVoyOWpaQzF6WlhKMlpYSWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObGNuWnBZMlV0WVdOamIzVnVkQzUxYVdRaU9pSTBNR0kxWVRVek1DMHlNemt3TFRReE0yVXRPRFE0T0MxbE1HTTNZVEE0TURBMk1UTWlMQ0p6ZFdJaU9pSnplWE4wWlcwNmMyVnlkbWxqWldGalkyOTFiblE2YzNSMGNuTXRZWEpuYjJOa09tRnlaMjlqWkMxaGNtZHZZMlF0YzJWeWRtVnlJbjAuTEItMmpIS1FYSEo3NXBaQkxCaDh0QUVnLTczeTBQeEpjZFdyRk5pR2JLV2NwdXY3WWxzM05BR1B1bEE5NHY1WjhfbEY4M1ZKWDJZOU56N3hBcC15SWxCaVRVSTAtcEpPYmZSMUhMa3kwdUlQS0U0eERiT0Z6MFFVZmhGM0hvUmdReGw2WVFHZXRobkpqWlUtSlFkclpDZnFwakZNa2swQnhCc1V0T1lDTGc5UG5OZXpBQVBHeFNRc0xwTVZ5Y3BnUTZ3ZVQyeFUxeHVOaHlSdXRXM1ZlWlFvQTJSZ1BhMG5CbndVd1VvNkdlYVJPbHY5QlpWTGQwa2pwTDZzRG5uSWpTZDFOZmVPYVJIWWVWSEJOMUpBdzZzMGoxVU1vU2ZSWmZEakI4YmJXc2tGSnIza3ROMGVuSFpTVUdmY0hiSWNwMHc3dERKM3pXdjAwUm9tNEdNU2hISXZrOW42dkd6aXAzQjFvMXVqY3lBRVN3QUxMMkRkSTBja2U4Z3pQbzVYY1hISzIzUnlhVlJWTUhMNnBMODlFNUwwYzdySzVxRnM3czdua19fNEZiZHVXNHhMbEk3cXZHakFOcHZnTURMSDROeXEyYVJJTVI5R3JHbkFVU2VSdVFLMDNWbVQ1Wk9LakJZODNfb281ZWVhbE5BSEtkZ0F1OWdRbDh6TXg0VEY0QmNrQVo2TW14UU5GMUt4TFBtVWNHd3V4RXlheHB0TUVzVU9QWGs2U2xJcnZEOFJveVgxLUt1dHpQSWl6UGZHSmZMa1JFaFMzYVhKcERLMGt5MGNJOFBRQ3BWdHA1QUNtWlFlcEIzR2hNak1XanJ3Ti1ncE9QR2N4ZlRKNWZLdVZ4eW5nV0NoWl9lbG03LTMyXzFzY2tCeDVaVmdleGtoeTBZNU00SF8wUFUiLCJlbWFpbCI6InNlcnZpY2VhY2NvdW50QGV4YW1wbGUub3JnIiwiYXV0aCI6ImMyVnlkbWxqWldGalkyOTFiblE2WlhsS2FHSkhZMmxQYVVwVFZYcEpNVTVwU1hOSmJYUndXa05KTmtsdGVHbE5RekZtWVRGa1NsWlVVbWhrTTI5NllUQjRkR1ZGZEVkVFJYaE1UVWM1UkZGc1NtaGhNV3h1VlRKYU1WWlhNVU5XVkdobVUxZHphV1pSTG1WNVNuQmpNMDFwVDJsS2NtUlhTbXhqYlRWc1pFZFdla3d6VG14amJscHdXVEpXYUZreVRuWmtWelV3U1dsM2FXRXpWbWxhV0VwMVdsaFNiR041TlhCaWVUbDZXbGhLTW1GWFRteFpWMDVxWWpOV2RXUkRPWFZaVnpGc1l6TkNhRmt5VldsUGFVcDZaRWhTZVdONU1XaGpiV1IyV1RKUmFVeERTbkprVjBwc1kyMDFiR1JIVm5wTWJXeDJURE5PYkdOdVduQlpNbFpvV1RKT2RtUlhOVEJNTTA1c1dUTktiR1JETlhWWlZ6RnNTV3B2YVZsWVNtNWlNazVyVEZkR2VWb3lPV3BhUXpGNldsaEtNbHBZU1hSa1J6bHlXbGMwZEUxcVZuZE5iVzlwVEVOS2NtUlhTbXhqYlRWc1pFZFdla3h0YkhaTU0wNXNZMjVhY0ZreVZtaFpNazUyWkZjMU1Fd3pUbXhqYmxwd1dUSlZkRmxYVG1waU0xWjFaRU0xZFZsWE1XeEphbTlwV1ZoS2JtSXlUbXRNVjBaNVdqSTVhbHBETVhwYVdFb3lXbGhKYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzWTI1YWNGa3lWWFJaVjA1cVlqTldkV1JETlRGaFYxRnBUMmxKTUUxSFNURlpWRlY2VFVNd2VVMTZhM2RNVkZGNFRUSlZkRTlFVVRSUFF6RnNUVWROTTFsVVFUUk5SRUV5VFZSTmFVeERTbnBrVjBscFQybEtlbVZZVGpCYVZ6QTJZekpXZVdSdGJHcGFWMFpxV1RJNU1XSnVVVFpqTTFJd1kyNU5kRmxZU201aU1rNXJUMjFHZVZveU9XcGFRekZvWTIxa2Rsa3lVWFJqTWxaNVpHMVdlVWx1TUM1TVFpMHlha2hMVVZoSVNqYzFjRnBDVEVKb09IUkJSV2N0TnpONU1GQjRTbU5rVjNKR1RtbEhZa3RYWTNCMWRqZFpiSE16VGtGSFVIVnNRVGswZGpWYU9GOXNSamd6VmtwWU1sazVUbm8zZUVGd0xYbEpiRUpwVkZWSk1DMXdTazlpWmxJeFNFeHJlVEIxU1ZCTFJUUjRSR0pQUm5vd1VWVm1hRVl6U0c5U1oxRjRiRFpaVVVkbGRHaHVTbXBhVlMxS1VXUnlXa05tY1hCcVJrMXJhekJDZUVKelZYUlBXVU5NWnpsUWJrNWxla0ZCVUVkNFUxRnpUSEJOVm5samNHZFJObmRsVkRKNFZURjRkVTVvZVZKMWRGY3pWbVZhVVc5Qk1sSm5VR0V3YmtKdWQxVjNWVzgyUjJWaFVrOXNkamxDV2xaTVpEQnJhbkJNTm5ORWJtNUphbE5rTVU1bVpVOWhVa2haWlZaSVFrNHhTa0YzTm5Nd2FqRlZUVzlUWmxKYVprUnFRamhpWWxkemEwWktjak5yZEU0d1pXNUlXbE5WUjJaalNHSkpZM0F3ZHpkMFJFb3plbGQyTURCU2IyMDBSMDFUYUVoSmRtczVialoyUjNwcGNETkNNVzh4ZFdwamVVRkZVM2RCVEV3eVJHUkpNR05yWlRobmVsQnZOVmhqV0VoTE1qTlNlV0ZXVWxaTlNFdzJjRXc0T1VVMVREQmpOM0pMTlhGR2N6ZHpOMjVyWDE4MFJtSmtkVmMwZUV4c1NUZHhka2RxUVU1d2RtZE5SRXhJTkU1NWNUSmhVa2xOVWpsSGNrZHVRVlZUWlZKMVVVc3dNMVp0VkRWYVQwdHFRbGs0TTE5dmJ6VmxaV0ZzVGtGSVMyUm5RWFU1WjFGc09IcE5lRFJVUmpSQ1kydEJXalpOYlhoUlRrWXhTM2hNVUcxVlkwZDNkWGhGZVdGNGNIUk5SWE5WVDFCWWF6WlRiRWx5ZGtRNFVtOTVXREV0UzNWMGVsQkphWHBRWmtkS1preHJVa1ZvVXpOaFdFcHdSRXN3YTNrd1kwazRVRkZEY0ZaMGNEVkJRMjFhVVdWd1FqTkhhRTFxVFZkcWNuZE9MV2R3VDFCSFkzaG1WRW8xWmt0MVZuaDVibWRYUTJoYVgyVnNiVGN0TXpKZk1YTmphMEo0TlZwV1oyVjRhMmg1TUZrMVRUUklYekJRVlE9PSJ9LCJpbWFnZS1yZWdpc3RyeS5vcGVuc2hpZnQtaW1hZ2UtcmVnaXN0cnkuc3ZjLmNsdXN0ZXIubG9jYWw6NTAwMCI6eyJ1c2VybmFtZSI6InNlcnZpY2VhY2NvdW50IiwicGFzc3dvcmQiOiJleUpoYkdjaU9pSlNVekkxTmlJc0ltdHBaQ0k2SW14aU1DMWZhMWRKVlRSaGQzb3phMHh0ZUV0R1NFeExNRzlEUWxKaGExbG5VMloxVlcxQ1ZUaGZTV3NpZlEuZXlKcGMzTWlPaUpyZFdKbGNtNWxkR1Z6TDNObGNuWnBZMlZoWTJOdmRXNTBJaXdpYTNWaVpYSnVaWFJsY3k1cGJ5OXpaWEoyYVdObFlXTmpiM1Z1ZEM5dVlXMWxjM0JoWTJVaU9pSnpkSFJ5Y3kxaGNtZHZZMlFpTENKcmRXSmxjbTVsZEdWekxtbHZMM05sY25acFkyVmhZMk52ZFc1MEwzTmxZM0psZEM1dVlXMWxJam9pWVhKbmIyTmtMV0Z5WjI5alpDMXpaWEoyWlhJdGRHOXJaVzR0TWpWd01tb2lMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObGNuWnBZMlV0WVdOamIzVnVkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxelpYSjJaWElpTENKcmRXSmxjbTVsZEdWekxtbHZMM05sY25acFkyVmhZMk52ZFc1MEwzTmxjblpwWTJVdFlXTmpiM1Z1ZEM1MWFXUWlPaUkwTUdJMVlUVXpNQzB5TXprd0xUUXhNMlV0T0RRNE9DMWxNR00zWVRBNE1EQTJNVE1pTENKemRXSWlPaUp6ZVhOMFpXMDZjMlZ5ZG1salpXRmpZMjkxYm5RNmMzUjBjbk10WVhKbmIyTmtPbUZ5WjI5alpDMWhjbWR2WTJRdGMyVnlkbVZ5SW4wLkxCLTJqSEtRWEhKNzVwWkJMQmg4dEFFZy03M3kwUHhKY2RXckZOaUdiS1djcHV2N1lsczNOQUdQdWxBOTR2NVo4X2xGODNWSlgyWTlOejd4QXAteUlsQmlUVUkwLXBKT2JmUjFITGt5MHVJUEtFNHhEYk9GejBRVWZoRjNIb1JnUXhsNllRR2V0aG5KalpVLUpRZHJaQ2ZxcGpGTWtrMEJ4QnNVdE9ZQ0xnOVBuTmV6QUFQR3hTUXNMcE1WeWNwZ1E2d2VUMnhVMXh1Tmh5UnV0VzNWZVpRb0EyUmdQYTBuQm53VXdVbzZHZWFST2x2OUJaVkxkMGtqcEw2c0RubklqU2QxTmZlT2FSSFllVkhCTjFKQXc2czBqMVVNb1NmUlpmRGpCOGJiV3NrRkpyM2t0TjBlbkhaU1VHZmNIYkljcDB3N3RESjN6V3YwMFJvbTRHTVNoSEl2azluNnZHemlwM0IxbzF1amN5QUVTd0FMTDJEZEkwY2tlOGd6UG81WGNYSEsyM1J5YVZSVk1ITDZwTDg5RTVMMGM3cks1cUZzN3M3bmtfXzRGYmR1VzR4TGxJN3F2R2pBTnB2Z01ETEg0TnlxMmFSSU1SOUdyR25BVVNlUnVRSzAzVm1UNVpPS2pCWTgzX29vNWVlYWxOQUhLZGdBdTlnUWw4ek14NFRGNEJja0FaNk1teFFORjFLeExQbVVjR3d1eEV5YXhwdE1Fc1VPUFhrNlNsSXJ2RDhSb3lYMS1LdXR6UElpelBmR0pmTGtSRWhTM2FYSnBESzBreTBjSThQUUNwVnRwNUFDbVpRZXBCM0doTWpNV2pyd04tZ3BPUEdjeGZUSjVmS3VWeHluZ1dDaFpfZWxtNy0zMl8xc2NrQng1WlZnZXhraHkwWTVNNEhfMFBVIiwiZW1haWwiOiJzZXJ2aWNlYWNjb3VudEBleGFtcGxlLm9yZyIsImF1dGgiOiJjMlZ5ZG1salpXRmpZMjkxYm5RNlpYbEthR0pIWTJsUGFVcFRWWHBKTVU1cFNYTkpiWFJ3V2tOSk5rbHRlR2xOUXpGbVlURmtTbFpVVW1oa00yOTZZVEI0ZEdWRmRFZFRSWGhNVFVjNVJGRnNTbWhoTVd4dVZUSmFNVlpYTVVOV1ZHaG1VMWR6YVdaUkxtVjVTbkJqTTAxcFQybEtjbVJYU214amJUVnNaRWRXZWt3elRteGpibHB3V1RKV2FGa3lUblprVnpVd1NXbDNhV0V6Vm1sYVdFcDFXbGhTYkdONU5YQmllVGw2V2xoS01tRlhUbXhaVjA1cVlqTldkV1JET1hWWlZ6RnNZek5DYUZreVZXbFBhVXA2WkVoU2VXTjVNV2hqYldSMldUSlJhVXhEU25Ka1YwcHNZMjAxYkdSSFZucE1iV3gyVEROT2JHTnVXbkJaTWxab1dUSk9kbVJYTlRCTU0wNXNXVE5LYkdSRE5YVlpWekZzU1dwdmFWbFlTbTVpTWs1clRGZEdlVm95T1dwYVF6RjZXbGhLTWxwWVNYUmtSemx5V2xjMGRFMXFWbmROYlc5cFRFTktjbVJYU214amJUVnNaRWRXZWt4dGJIWk1NMDVzWTI1YWNGa3lWbWhaTWs1MlpGYzFNRXd6VG14amJscHdXVEpWZEZsWFRtcGlNMVoxWkVNMWRWbFhNV3hKYW05cFdWaEtibUl5VG10TVYwWjVXakk1YWxwRE1YcGFXRW95V2xoSmFVeERTbkprVjBwc1kyMDFiR1JIVm5wTWJXeDJURE5PYkdOdVduQlpNbFpvV1RKT2RtUlhOVEJNTTA1c1kyNWFjRmt5VlhSWlYwNXFZak5XZFdSRE5URmhWMUZwVDJsSk1FMUhTVEZaVkZWNlRVTXdlVTE2YTNkTVZGRjRUVEpWZEU5RVVUUlBRekZzVFVkTk0xbFVRVFJOUkVFeVRWUk5hVXhEU25wa1YwbHBUMmxLZW1WWVRqQmFWekEyWXpKV2VXUnRiR3BhVjBacVdUSTVNV0p1VVRaak0xSXdZMjVOZEZsWVNtNWlNazVyVDIxR2VWb3lPV3BhUXpGb1kyMWtkbGt5VVhSak1sWjVaRzFXZVVsdU1DNU1RaTB5YWtoTFVWaElTamMxY0ZwQ1RFSm9PSFJCUldjdE56TjVNRkI0U21Oa1YzSkdUbWxIWWt0WFkzQjFkamRaYkhNelRrRkhVSFZzUVRrMGRqVmFPRjlzUmpnelZrcFlNbGs1VG5vM2VFRndMWGxKYkVKcFZGVkpNQzF3U2s5aVpsSXhTRXhyZVRCMVNWQkxSVFI0UkdKUFJub3dVVlZtYUVZelNHOVNaMUY0YkRaWlVVZGxkR2h1U21wYVZTMUtVV1J5V2tObWNYQnFSazFyYXpCQ2VFSnpWWFJQV1VOTVp6bFFiazVsZWtGQlVFZDRVMUZ6VEhCTlZubGpjR2RSTm5kbFZESjRWVEY0ZFU1b2VWSjFkRmN6Vm1WYVVXOUJNbEpuVUdFd2JrSnVkMVYzVlc4MlIyVmhVazlzZGpsQ1dsWk1aREJyYW5CTU5uTkVibTVKYWxOa01VNW1aVTloVWtoWlpWWklRazR4U2tGM05uTXdhakZWVFc5VFpsSmFaa1JxUWpoaVlsZHphMFpLY2pOcmRFNHdaVzVJV2xOVlIyWmpTR0pKWTNBd2R6ZDBSRW96ZWxkMk1EQlNiMjAwUjAxVGFFaEpkbXM1YmpaMlIzcHBjRE5DTVc4eGRXcGplVUZGVTNkQlRFd3lSR1JKTUdOclpUaG5lbEJ2TlZoaldFaExNak5TZVdGV1VsWk5TRXcyY0V3NE9VVTFUREJqTjNKTE5YRkdjemR6TjI1clgxODBSbUprZFZjMGVFeHNTVGR4ZGtkcVFVNXdkbWROUkV4SU5FNTVjVEpoVWtsTlVqbEhja2R1UVZWVFpWSjFVVXN3TTFadFZEVmFUMHRxUWxrNE0xOXZielZsWldGc1RrRklTMlJuUVhVNVoxRnNPSHBOZURSVVJqUkNZMnRCV2paTmJYaFJUa1l4UzNoTVVHMVZZMGQzZFhoRmVXRjRjSFJOUlhOVlQxQllhelpUYkVseWRrUTRVbTk1V0RFdFMzVjBlbEJKYVhwUVprZEtaa3hyVWtWb1V6TmhXRXB3UkVzd2Eza3dZMGs0VUZGRGNGWjBjRFZCUTIxYVVXVndRak5IYUUxcVRWZHFjbmRPTFdkd1QxQkhZM2htVkVvMVprdDFWbmg1Ym1kWFEyaGFYMlZzYlRjdE16SmZNWE5qYTBKNE5WcFdaMlY0YTJoNU1GazFUVFJJWHpCUVZRPT0ifSwiaW1hZ2UtcmVnaXN0cnkub3BlbnNoaWZ0LWltYWdlLXJlZ2lzdHJ5LnN2Yzo1MDAwIjp7InVzZXJuYW1lIjoic2VydmljZWFjY291bnQiLCJwYXNzd29yZCI6ImV5SmhiR2NpT2lKU1V6STFOaUlzSW10cFpDSTZJbXhpTUMxZmExZEpWVFJoZDNvemEweHRlRXRHU0V4TE1HOURRbEpoYTFsblUyWjFWVzFDVlRoZlNXc2lmUS5leUpwYzNNaU9pSnJkV0psY201bGRHVnpMM05sY25acFkyVmhZMk52ZFc1MElpd2lhM1ZpWlhKdVpYUmxjeTVwYnk5elpYSjJhV05sWVdOamIzVnVkQzl1WVcxbGMzQmhZMlVpT2lKemRIUnljeTFoY21kdlkyUWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObFkzSmxkQzV1WVcxbElqb2lZWEpuYjJOa0xXRnlaMjlqWkMxelpYSjJaWEl0ZEc5clpXNHRNalZ3TW1vaUxDSnJkV0psY201bGRHVnpMbWx2TDNObGNuWnBZMlZoWTJOdmRXNTBMM05sY25acFkyVXRZV05qYjNWdWRDNXVZVzFsSWpvaVlYSm5iMk5rTFdGeVoyOWpaQzF6WlhKMlpYSWlMQ0pyZFdKbGNtNWxkR1Z6TG1sdkwzTmxjblpwWTJWaFkyTnZkVzUwTDNObGNuWnBZMlV0WVdOamIzVnVkQzUxYVdRaU9pSTBNR0kxWVRVek1DMHlNemt3TFRReE0yVXRPRFE0T0MxbE1HTTNZVEE0TURBMk1UTWlMQ0p6ZFdJaU9pSnplWE4wWlcwNmMyVnlkbWxqWldGalkyOTFiblE2YzNSMGNuTXRZWEpuYjJOa09tRnlaMjlqWkMxaGNtZHZZMlF0YzJWeWRtVnlJbjAuTEItMmpIS1FYSEo3NXBaQkxCaDh0QUVnLTczeTBQeEpjZFdyRk5pR2JLV2NwdXY3WWxzM05BR1B1bEE5NHY1WjhfbEY4M1ZKWDJZOU56N3hBcC15SWxCaVRVSTAtcEpPYmZSMUhMa3kwdUlQS0U0eERiT0Z6MFFVZmhGM0hvUmdReGw2WVFHZXRobkpqWlUtSlFkclpDZnFwakZNa2swQnhCc1V0T1lDTGc5UG5OZXpBQVBHeFNRc0xwTVZ5Y3BnUTZ3ZVQyeFUxeHVOaHlSdXRXM1ZlWlFvQTJSZ1BhMG5CbndVd1VvNkdlYVJPbHY5QlpWTGQwa2pwTDZzRG5uSWpTZDFOZmVPYVJIWWVWSEJOMUpBdzZzMGoxVU1vU2ZSWmZEakI4YmJXc2tGSnIza3ROMGVuSFpTVUdmY0hiSWNwMHc3dERKM3pXdjAwUm9tNEdNU2hISXZrOW42dkd6aXAzQjFvMXVqY3lBRVN3QUxMMkRkSTBja2U4Z3pQbzVYY1hISzIzUnlhVlJWTUhMNnBMODlFNUwwYzdySzVxRnM3czdua19fNEZiZHVXNHhMbEk3cXZHakFOcHZnTURMSDROeXEyYVJJTVI5R3JHbkFVU2VSdVFLMDNWbVQ1Wk9LakJZODNfb281ZWVhbE5BSEtkZ0F1OWdRbDh6TXg0VEY0QmNrQVo2TW14UU5GMUt4TFBtVWNHd3V4RXlheHB0TUVzVU9QWGs2U2xJcnZEOFJveVgxLUt1dHpQSWl6UGZHSmZMa1JFaFMzYVhKcERLMGt5MGNJOFBRQ3BWdHA1QUNtWlFlcEIzR2hNak1XanJ3Ti1ncE9QR2N4ZlRKNWZLdVZ4eW5nV0NoWl9lbG03LTMyXzFzY2tCeDVaVmdleGtoeTBZNU00SF8wUFUiLCJlbWFpbCI6InNlcnZpY2VhY2NvdW50QGV4YW1wbGUub3JnIiwiYXV0aCI6ImMyVnlkbWxqWldGalkyOTFiblE2WlhsS2FHSkhZMmxQYVVwVFZYcEpNVTVwU1hOSmJYUndXa05KTmtsdGVHbE5RekZtWVRGa1NsWlVVbWhrTTI5NllUQjRkR1ZGZEVkVFJYaE1UVWM1UkZGc1NtaGhNV3h1VlRKYU1WWlhNVU5XVkdobVUxZHphV1pSTG1WNVNuQmpNMDFwVDJsS2NtUlhTbXhqYlRWc1pFZFdla3d6VG14amJscHdXVEpXYUZreVRuWmtWelV3U1dsM2FXRXpWbWxhV0VwMVdsaFNiR041TlhCaWVUbDZXbGhLTW1GWFRteFpWMDVxWWpOV2RXUkRPWFZaVnpGc1l6TkNhRmt5VldsUGFVcDZaRWhTZVdONU1XaGpiV1IyV1RKUmFVeERTbkprVjBwc1kyMDFiR1JIVm5wTWJXeDJURE5PYkdOdVduQlpNbFpvV1RKT2RtUlhOVEJNTTA1c1dUTktiR1JETlhWWlZ6RnNTV3B2YVZsWVNtNWlNazVyVEZkR2VWb3lPV3BhUXpGNldsaEtNbHBZU1hSa1J6bHlXbGMwZEUxcVZuZE5iVzlwVEVOS2NtUlhTbXhqYlRWc1pFZFdla3h0YkhaTU0wNXNZMjVhY0ZreVZtaFpNazUyWkZjMU1Fd3pUbXhqYmxwd1dUSlZkRmxYVG1waU0xWjFaRU0xZFZsWE1XeEphbTlwV1ZoS2JtSXlUbXRNVjBaNVdqSTVhbHBETVhwYVdFb3lXbGhKYVV4RFNuSmtWMHBzWTIwMWJHUkhWbnBNYld4MlRETk9iR051V25CWk1sWm9XVEpPZG1SWE5UQk1NMDVzWTI1YWNGa3lWWFJaVjA1cVlqTldkV1JETlRGaFYxRnBUMmxKTUUxSFNURlpWRlY2VFVNd2VVMTZhM2RNVkZGNFRUSlZkRTlFVVRSUFF6RnNUVWROTTFsVVFUUk5SRUV5VFZSTmFVeERTbnBrVjBscFQybEtlbVZZVGpCYVZ6QTJZekpXZVdSdGJHcGFWMFpxV1RJNU1XSnVVVFpqTTFJd1kyNU5kRmxZU201aU1rNXJUMjFHZVZveU9XcGFRekZvWTIxa2Rsa3lVWFJqTWxaNVpHMVdlVWx1TUM1TVFpMHlha2hMVVZoSVNqYzFjRnBDVEVKb09IUkJSV2N0TnpONU1GQjRTbU5rVjNKR1RtbEhZa3RYWTNCMWRqZFpiSE16VGtGSFVIVnNRVGswZGpWYU9GOXNSamd6VmtwWU1sazVUbm8zZUVGd0xYbEpiRUpwVkZWSk1DMXdTazlpWmxJeFNFeHJlVEIxU1ZCTFJUUjRSR0pQUm5vd1VWVm1hRVl6U0c5U1oxRjRiRFpaVVVkbGRHaHVTbXBhVlMxS1VXUnlXa05tY1hCcVJrMXJhekJDZUVKelZYUlBXVU5NWnpsUWJrNWxla0ZCVUVkNFUxRnpUSEJOVm5samNHZFJObmRsVkRKNFZURjRkVTVvZVZKMWRGY3pWbVZhVVc5Qk1sSm5VR0V3YmtKdWQxVjNWVzgyUjJWaFVrOXNkamxDV2xaTVpEQnJhbkJNTm5ORWJtNUphbE5rTVU1bVpVOWhVa2haWlZaSVFrNHhTa0YzTm5Nd2FqRlZUVzlUWmxKYVprUnFRamhpWWxkemEwWktjak5yZEU0d1pXNUlXbE5WUjJaalNHSkpZM0F3ZHpkMFJFb3plbGQyTURCU2IyMDBSMDFUYUVoSmRtczVialoyUjNwcGNETkNNVzh4ZFdwamVVRkZVM2RCVEV3eVJHUkpNR05yWlRobmVsQnZOVmhqV0VoTE1qTlNlV0ZXVWxaTlNFdzJjRXc0T1VVMVREQmpOM0pMTlhGR2N6ZHpOMjVyWDE4MFJtSmtkVmMwZUV4c1NUZHhka2RxUVU1d2RtZE5SRXhJTkU1NWNUSmhVa2xOVWpsSGNrZHVRVlZUWlZKMVVVc3dNMVp0VkRWYVQwdHFRbGs0TTE5dmJ6VmxaV0ZzVGtGSVMyUm5RWFU1WjFGc09IcE5lRFJVUmpSQ1kydEJXalpOYlhoUlRrWXhTM2hNVUcxVlkwZDNkWGhGZVdGNGNIUk5SWE5WVDFCWWF6WlRiRWx5ZGtRNFVtOTVXREV0UzNWMGVsQkphWHBRWmtkS1preHJVa1ZvVXpOaFdFcHdSRXN3YTNrd1kwazRVRkZEY0ZaMGNEVkJRMjFhVVdWd1FqTkhhRTFxVFZkcWNuZE9MV2R3VDFCSFkzaG1WRW8xWmt0MVZuaDVibWRYUTJoYVgyVnNiVGN0TXpKZk1YTmphMEo0TlZwV1oyVjRhMmg1TUZrMVRUUklYekJRVlE9PSJ9fQ==
+type: kubernetes.io/dockercfg
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: argocd-ssh-known-hosts-cm
+data:
+  ssh_known_hosts: |
+    [ssh.github.com]:443 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+    [ssh.github.com]:443 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+    [ssh.github.com]:443 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+    bitbucket.org ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPIQmuzMBuKdWeF4+a2sjSSpBK0iqitSQ+5BM9KhpexuGt20JpTVM7u5BDZngncgrqDMbWdxMWWOGtZ9UgbqgZE=
+    bitbucket.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIazEu89wgQZ4bqs3d63QSMzYVa0MuJ2e2gKTKqu+UUO
+    bitbucket.org ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAubiN81eDcafrgMeLzaFPsw2kNvEcqTKl/VqLat/MaB33pZy0y3rJZtnqwR2qOOvbwKZYKiEO1O6VqNEBxKvJJelCq0dTXWT5pbO2gDXC6h6QDXCaHo6pOHGPUy+YBaGQRGuSusMEASYiWunYN0vCAI8QaXnWMXNMdFP3jHAJH0eDsoiGnLPBlBp4TNm6rYI74nMzgz3B9IikW4WVK+dc8KZJZWYjAuORU3jc1c/NPskD2ASinf8v3xnfXeukU0sJ5N6m5E8VLjObPEO+mN2t/FZTMZLiFqPWc/ALSqnMnnhwrNi2rbfg/rd/IpL8Le3pSBne8+seeFVBoGqzHM9yXw==
+    github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+    github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+    github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+    gitlab.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBFSMqzJeV9rUzU4kWitGjeR4PWSa29SPqJ1fVkhtj3Hw9xjLVXVYrU9QlYWrOLXBpQ6KWjbjTDTdDkoohFzgbEY=
+    gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf
+    gitlab.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCsj2bNKTBSpIYDEGk9KxsGh3mySTRgMtXL583qmBpzeQ+jqCMRgBqB98u3z++J1sKlXHWfM9dyhSevkMwSbhoR8XIq/U0tCNyokEi/ueaBMCvbcTHhO7FcwzY92WK4Yt0aGROY5qX2UKSeOvuP4D6TPqKF1onrSzH9bx9XUf2lEdWT/ia1NEKjunUqu1xOB/StKDHMoX4/OKyIzuS0q/T1zOATthvasJFoPrAjkohTyaDUz2LN5JoH839hViyEG82yB+MjcFV5MU3N1l1QL3cVUCh93xSaua1N85qivl+siMkPGbO5xR/En4iEY6K2XPASUEMaieWVNTRCtJ4S8H+9
+    ssh.dev.azure.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOfGJ4NakVyIzf1rXYd4d7wo6jBlkLvCA4odBlL0mDUyZ0/QUfTTqeu+tm22gOsv+VrVTMk6vwRU75gY/y9ut5Mb3bR5BV58dKXyq9A9UeB5Cakehn5Zgm6x1mKoVyf+FFn26iYqXJRgzIZZcZ5V6hrE0Qg39kZm4az48o0AUbf6Sp4SLdvnuMa2sVNwHBboS7EJkm57XQPVU3/QpyNLHbWDdzwtrlS+ez30S3AdYhLKEOxAG8weOnyrtLJAUen9mTkol8oII1edf7mWWbWVf0nBmly21+nZcmCTISQBtdcyPaEno7fFQMDD26/s0lfKob4Kw8H
+    vs-ssh.visualstudio.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7Hr1oTWqNqOlzGJOfGJ4NakVyIzf1rXYd4d7wo6jBlkLvCA4odBlL0mDUyZ0/QUfTTqeu+tm22gOsv+VrVTMk6vwRU75gY/y9ut5Mb3bR5BV58dKXyq9A9UeB5Cakehn5Zgm6x1mKoVyf+FFn26iYqXJRgzIZZcZ5V6hrE0Qg39kZm4az48o0AUbf6Sp4SLdvnuMa2sVNwHBboS7EJkm57XQPVU3/QpyNLHbWDdzwtrlS+ez30S3AdYhLKEOxAG8weOnyrtLJAUen9mTkol8oII1edf7mWWbWVf0nBmly21+nZcmCTISQBtdcyPaEno7fFQMDD26/s0lfKob4Kw8H
+    [codessh.sbb.ch]:7999 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCpEG2NjlXSz42oLtU9QpZOGDGqnO+6ZMH2QZ5uZ+CPnsRG9nkb2okE79/IcTh6QhBj65YXwwZKdXlSzHZUKdzXDNanhtbTiLOq0yN7ABUM8cQ69kkvkevyN5tkTLB36SDMIHQoRlmpWciWyDIP3JGPbu35AtyL99vj7XlU5O7Vo13I8RmLiukTP6v9bRkWva7uXWtRLzZEdMB0ppne3TVIiSa/lzC5GZ0tekjLrYYtPsE7zqUZrECGYj1ShgEAIWC3rTAZJdIAPdgCRSTpTxYt+yhPEHnUA5Tyf8cdSV+HhJ88FoHzcFclNZyjvviVWjpabARMfPBS1yIquOpR2pT3
+    github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+    github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+    github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: argocd-tls-certs-cm
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: argocd-gpg-keys-cm
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: argocd-cm
+data:
+  admin.enabled: 'true'
+  application.resourceTrackingMethod: label
+  statusbadge.enabled: 'false'
+  resource.exclusions: ''
+  ga.trackingid: ''
+  repositories: ''
+  ga.anonymizeusers: 'false'
+  help.chatUrl: ''
+  resource.customizations.health.tekton.dev_TaskRun: |
+    hs = {
+      status = "Progressing",
+      message = "Tekton resource is running"
+    }
+    if obj.status ~= nil then
+      if obj.status.conditions ~= nil then
+        for i, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Succeeded" and condition.status == "False" then
+            hs.status = "Degraded"
+            hs.message = condition.message
+            return hs
+          end
+          if condition.type == "Succeeded" and condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = condition.message
+            return hs
+          end
+        end
+      end
+    end
+    return hs
+  resource.customizations.health.tekton.dev_PipelineRun: |
+    hs = {
+      status = "Progressing",
+      message = "Tekton resource is running"
+    }
+    if obj.status ~= nil then
+      if obj.status.conditions ~= nil then
+        for i, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Succeeded" and condition.status == "False" then
+            hs.status = "Degraded"
+            hs.message = condition.message
+            return hs
+          end
+          if condition.type == "Succeeded" and condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = condition.message
+            return hs
+          end
+        end
+      end
+    end
+    return hs
+  url: 'https://argocd-server'
+  resource.customizations.health.solace.broker.sbb.ch_Queue: |
+    hs = {
+      status = "Progressing",
+      message = "New resources, not jet processed by operator"
+    }
+    if obj.status == nil then
+        return hs
+    end
+
+    hs.message = obj.status.statusMsg
+
+    if obj.status.status == "SYNCED" then
+        hs.status = "Healthy"
+        return hs
+    elseif obj.status.status == "PROGRESSING" or obj.status.status == "DIRTY" then
+        hs.status = "Progressing"
+        return hs
+    elseif obj.status.status == "FAILED" then
+        hs.status = "Degraded"
+        return hs
+    end
+
+    return hs
+  help.chatText: ''
+  kustomize.buildOptions: ''
+  resource.inclusions: ''
+  oidc.config: ''
+  repository.credentials: ''
+  users.anonymous.enabled: 'false'
+  resource.customizations.health.solace.broker.sbb.ch_Broker: |
+    hs = {
+      status = "Progressing",
+      message = "New resources, not jet processed by operator"
+    }
+    if obj.status == nil then
+        return hs
+    end
+
+    hs.message = obj.status.statusMsg
+
+    if obj.status.status == "SYNCED" then
+        hs.status = "Healthy"
+        return hs
+    elseif obj.status.status == "PROGRESSING" or obj.status.status == "DIRTY" then
+        hs.status = "Progressing"
+        return hs
+    elseif obj.status.status == "FAILED" then
+        hs.status = "Degraded"
+        return hs
+    end
+
+    return hs
+  configManagementPlugins: ''
+  application.instanceLabelKey: applications.argoproj.io/app-name
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: argocd-ca
+data:
+  tls.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIDBjCCAe6gAwIBAgIIAeAK/7A+2acwDQYJKoZIhvcNAQELBQAwITEfMB0GA1UE
+    AwwWYXJnb2NkLW9wZXJhdG9yQGFyZ29jZDAeFw0yNDA2MDExNjI4MThaFw0yNTA2
+    MDExNjI4MThaMCExHzAdBgNVBAMMFmFyZ29jZC1vcGVyYXRvckBhcmdvY2QwggEi
+    MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC80ClXBwhGVcggSZLx5rOtsvBX
+    ksE2oDPBiFuhSlK4n//JIA+TdG5EaJp3azS+n91Z8Dix1VSwqDszKl+G8Ok5cm2s
+    OSQCLpti8py9rR6W5Xxo/JhNS7k+lyexJz3ataO9bXl3LU4bQyqHQQSmyx+Bqh7s
+    MR47DGX4NmEaH3du2/pwaDRq70vn32CWZHvoXA+i5lAwNLP+MtzvCWrTAKfkUEyg
+    PkNakyJJvMKWYTpHLvei2nBmGZ1eSeV6J8pwWyCZM8HiaiNb8FDdIg54cC8w+yB+
+    kKFarTxtDRw5/38ErvzqDZu6yJLddFawBpGYMTEy6ck8KgiRCJru1d+IE4uFAgMB
+    AAGjQjBAMA4GA1UdDwEB/wQEAwICpDAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW
+    BBRkmhe9jc9+4lcZgnUh9ykiSyCAdzANBgkqhkiG9w0BAQsFAAOCAQEAPucw71e/
+    ymu25WDom+RhJjN0BUFiadRc3WtvWjZXneUWkROWbaRRG9QCifQmQX3hZJbZKfiU
+    WkCkX95/cpjgrlPzqd4ZoYGn6k8sBSskcS0hjJiI9At5IylP2ODSKQRSlUnLW0Km
+    k5XnNZ1K+za50w6m7XJliJ/CCXnvlYJTpfBhnjcPwU3vyBCcb56RfuZw8e7rl9jJ
+    6MtMQhu532Wze6ZGR3BMiJfGXPZOMZ097hgilVJB2o/M0HQOz7J6a6pYZ70nlaqZ
+    TXQYMRZRfbh+STGS56g8hHkAkZFAPLVlb7y9r+V8uLXwf15R2kNmBShANlo7hwnm
+    D8g/Ko4wehThzg==
+    -----END CERTIFICATE-----
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: argocd-default-cluster-config
+stringData:
+  config: |
+    {"tlsClientConfig":{"insecure":false}}
+  name: in-cluster
+  namespaces: demo,own-argocd
+  server: https://kubernetes.default.svc
+type: Opaque
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: argocd-cluster
+data:
+  admin.password: ZjlxNThzTW0yR29GQmJJTnVhMXpudnhPUENpbHREUUs=
+type: Opaque
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: argocd-ca
+data:
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURCakNDQWU2Z0F3SUJBZ0lJQWVBSy83QSsyYWN3RFFZSktvWklodmNOQVFFTEJRQXdJVEVmTUIwR0ExVUUKQXd3V1lYSm5iMk5rTFc5d1pYSmhkRzl5UUdGeVoyOWpaREFlRncweU5EQTJNREV4TmpJNE1UaGFGdzB5TlRBMgpNREV4TmpJNE1UaGFNQ0V4SHpBZEJnTlZCQU1NRm1GeVoyOWpaQzF2Y0dWeVlYUnZja0JoY21kdlkyUXdnZ0VpCk1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRQzgwQ2xYQndoR1ZjZ2dTWkx4NXJPdHN2QlgKa3NFMm9EUEJpRnVoU2xLNG4vL0pJQStUZEc1RWFKcDNhelMrbjkxWjhEaXgxVlN3cURzektsK0c4T2s1Y20ycwpPU1FDTHB0aThweTlyUjZXNVh4by9KaE5TN2srbHlleEp6M2F0YU85YlhsM0xVNGJReXFIUVFTbXl4K0JxaDdzCk1SNDdER1g0Tm1FYUgzZHUyL3B3YURScTcwdm4zMkNXWkh2b1hBK2k1bEF3TkxQK010enZDV3JUQUtma1VFeWcKUGtOYWt5Skp2TUtXWVRwSEx2ZWkybkJtR1oxZVNlVjZKOHB3V3lDWk04SGlhaU5iOEZEZElnNTRjQzh3K3lCKwprS0ZhclR4dERSdzUvMzhFcnZ6cURadTZ5SkxkZEZhd0JwR1lNVEV5NmNrOEtnaVJDSnJ1MWQrSUU0dUZBZ01CCkFBR2pRakJBTUE0R0ExVWREd0VCL3dRRUF3SUNwREFQQmdOVkhSTUJBZjhFQlRBREFRSC9NQjBHQTFVZERnUVcKQkJSa21oZTlqYzkrNGxjWmduVWg5eWtpU3lDQWR6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFQdWN3NzFlLwp5bXUyNVdEb20rUmhKak4wQlVGaWFkUmMzV3R2V2paWG5lVVdrUk9XYmFSUkc5UUNpZlFtUVgzaFpKYlpLZmlVCldrQ2tYOTUvY3BqZ3JsUHpxZDRab1lHbjZrOHNCU3NrY1MwaGpKaUk5QXQ1SXlsUDJPRFNLUVJTbFVuTFcwS20KazVYbk5aMUsremE1MHc2bTdYSmxpSi9DQ1hudmxZSlRwZkJobmpjUHdVM3Z5QkNjYjU2UmZ1Wnc4ZTdybDlqSgo2TXRNUWh1NTMyV3plNlpHUjNCTWlKZkdYUFpPTVowOTdoZ2lsVkpCMm8vTTBIUU96N0o2YTZwWVo3MG5sYXFaClRYUVlNUlpSZmJoK1NUR1M1Nmc4aEhrQWtaRkFQTFZsYjd5OXIrVjh1TFh3ZjE1UjJrTm1CU2hBTmxvN2h3bm0KRDhnL0tvNHdlaFRoemc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURCakNDQWU2Z0F3SUJBZ0lJQWVBSy83QSsyYWN3RFFZSktvWklodmNOQVFFTEJRQXdJVEVmTUIwR0ExVUUKQXd3V1lYSm5iMk5rTFc5d1pYSmhkRzl5UUdGeVoyOWpaREFlRncweU5EQTJNREV4TmpJNE1UaGFGdzB5TlRBMgpNREV4TmpJNE1UaGFNQ0V4SHpBZEJnTlZCQU1NRm1GeVoyOWpaQzF2Y0dWeVlYUnZja0JoY21kdlkyUXdnZ0VpCk1BMEdDU3FHU0liM0RRRUJBUVVBQTRJQkR3QXdnZ0VLQW9JQkFRQzgwQ2xYQndoR1ZjZ2dTWkx4NXJPdHN2QlgKa3NFMm9EUEJpRnVoU2xLNG4vL0pJQStUZEc1RWFKcDNhelMrbjkxWjhEaXgxVlN3cURzektsK0c4T2s1Y20ycwpPU1FDTHB0aThweTlyUjZXNVh4by9KaE5TN2srbHlleEp6M2F0YU85YlhsM0xVNGJReXFIUVFTbXl4K0JxaDdzCk1SNDdER1g0Tm1FYUgzZHUyL3B3YURScTcwdm4zMkNXWkh2b1hBK2k1bEF3TkxQK010enZDV3JUQUtma1VFeWcKUGtOYWt5Skp2TUtXWVRwSEx2ZWkybkJtR1oxZVNlVjZKOHB3V3lDWk04SGlhaU5iOEZEZElnNTRjQzh3K3lCKwprS0ZhclR4dERSdzUvMzhFcnZ6cURadTZ5SkxkZEZhd0JwR1lNVEV5NmNrOEtnaVJDSnJ1MWQrSUU0dUZBZ01CCkFBR2pRakJBTUE0R0ExVWREd0VCL3dRRUF3SUNwREFQQmdOVkhSTUJBZjhFQlRBREFRSC9NQjBHQTFVZERnUVcKQkJSa21oZTlqYzkrNGxjWmduVWg5eWtpU3lDQWR6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFQdWN3NzFlLwp5bXUyNVdEb20rUmhKak4wQlVGaWFkUmMzV3R2V2paWG5lVVdrUk9XYmFSUkc5UUNpZlFtUVgzaFpKYlpLZmlVCldrQ2tYOTUvY3BqZ3JsUHpxZDRab1lHbjZrOHNCU3NrY1MwaGpKaUk5QXQ1SXlsUDJPRFNLUVJTbFVuTFcwS20KazVYbk5aMUsremE1MHc2bTdYSmxpSi9DQ1hudmxZSlRwZkJobmpjUHdVM3Z5QkNjYjU2UmZ1Wnc4ZTdybDlqSgo2TXRNUWh1NTMyV3plNlpHUjNCTWlKZkdYUFpPTVowOTdoZ2lsVkpCMm8vTTBIUU96N0o2YTZwWVo3MG5sYXFaClRYUVlNUlpSZmJoK1NUR1M1Nmc4aEhrQWtaRkFQTFZsYjd5OXIrVjh1TFh3ZjE1UjJrTm1CU2hBTmxvN2h3bm0KRDhnL0tvNHdlaFRoemc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+  tls.key: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVBdk5BcFZ3Y0lSbFhJSUVtUzhlYXpyYkx3VjVMQk5xQXp3WWhib1VwU3VKLy95U0FQCmszUnVSR2lhZDJzMHZwL2RXZkE0c2RWVXNLZzdNeXBmaHZEcE9YSnRyRGtrQWk2Yll2S2N2YTBlbHVWOGFQeVkKVFV1NVBwY25zU2M5MnJXanZXMTVkeTFPRzBNcWgwRUVwc3NmZ2FvZTdERWVPd3hsK0RaaEdoOTNidHY2Y0dnMAphdTlMNTk5Z2xtUjc2RndQb3VaUU1EU3ovakxjN3dscTB3Q241RkJNb0Q1RFdwTWlTYnpDbG1FNlJ5NzNvdHB3ClpobWRYa25sZWlmS2NGc2dtVFBCNG1valcvQlEzU0lPZUhBdk1Qc2dmcENoV3EwOGJRMGNPZjkvQks3ODZnMmIKdXNpUzNYUldzQWFSbURFeE11bkpQQ29Ja1FpYTd0WGZpQk9MaFFJREFRQUJBb0lCQVFDNlRFbjk3SnBsaTg1aQp6VFdJS1RHd2VaWmJVaG9DWkIrdEhYWUx0dUhYK1ViUWxDbktQRjl3Y0NXNUhyWjBRQmlQM1U2VGFRS2ZLOTc5CnBSbU1jN2dyVHBTWUVlbE5uZDhEeW82Tk9IdXVOOUNCWm5xQUNlOUZxcThuUktqclc3MnI4cENlM3J6cWVXTkYKQVFvdDZNMjFpcjNvSHE3TlpIWllhbzkwendkeEFUa0RnVDJQSFhxYWVXb1I4QVRlWEJoOTVNeE55em5QU3VpegpZN21Jek1ONVNBbDVoRFRCL0FJQkkwdFpTVWtlcFlHTWxNMmZsWDRJRDRpSWNPQ1J2ZUtrK25MQVBGTXZKc3I2CjVscjgvdmNxanhLdTVFNjZtSy9jL2docVBMd0hBS2FWdkhCd2hrekNBS2UwS0pIUDcwUnUrei93T3lZUnZ4N3AKcWkzTXZnSUJBb0dCQU11NDY5d0huSmFHT2ovc3BYQjRWVWZCN00yTkdkU1R4QXRUSjVkd2tZUEpVdVFxSmo3SAo4MDR6ZEk5Q2JyR0c1M21ib3YyRFl4Wmk3bTJGQXZ2cTJMS1NhUVdwbWdpOVpkNUZBSUZuSGc1ZFdlZitJTDJ0ClVnQTljcHdzOHMzNGlhK1pQc1pHcVEwN0FORXpvYzFXZFBXZTdRV2QwcUlnU1ZscWY5NUNIemZWQW9HQkFPMUQKMEJTTDRkTW5HYkVxbStUbVlQUXQ0akVDZUMyaVdJM0docWZwMWc1aTl4QVhpRHlMRldCL2FQNkxrMkk5S2tKQgpoN29nLzVJcjYxRlpxY3A5SjRQMnBxbWV4RThGajJGRFo1M1hHZDBESExmc2dRQllHV21FVlRhaXRWRXB6YVVsCm1KNmNXYzdqckVVVU1ZL2V5aDZDdWtwRmhjWVpzWW9pNlE2MHlnenhBb0dCQU1rOFRIZVhhVDFqTCt6dk5PanAKWk13eUtsbE5OU1BBSnhwTXRNSXFKd04zL2hKMTlEdDF4Y2dNbWVuZFpIeW1Wc2JRVDJ0K3VvVmxpa0hTN3dTcgprZ3lyQldUYmlOVnpTVW9LL1JuV0kyRnJJeUUvN1ZXUC9IMVNOWUZDQVVJbWJOTnhYQW45eUlYU0w5ZDIyakI4Clk2SXdyODhwZStROFlsZ2FGRjhYRDhGVkFvR0FZWkk4bE9aOWhMOFVvclg2RENUdGhCMEdZczg0S3RRVGhLSTYKcC96U3FYSHJWalBITTlhaWdOK0Vod0ZSSjlvdGNiZlBJQzBIek0zQTVPQnhvYkxjT0RtTGlqK2ZUVHZsSGNPQgpiZmlTUzBCSFpCK2ZZVXZaajNuN0xRKzJidDA1RTR3bGVqeWo5aC9NclUvRG5mMnBzdWhod2I5Ylp2OFQ4dEd1CmMvekhCcEVDZ1lCVG1YZGhCcWJBa0tqVUkrRWlUdjNCUmkzSkZlZU1QUWNYUHlSek1rNHpkNzd1RElWeDU1U1MKRUJBQkhPcmgrRmJ4YlJ6K0pBSmRKWE56UDRtTmdKaFpDNVRWNW5TUzc5c2gzVWoxTDRyZklxNEgxc05FNFRCWQpuWFl1WDRXVGNFMkd6a2JVUkMrKzlQZXR4T0c3QXZFWnVlR3RuZjBQQ1ZZSVZXVEUxR0wzdkE9PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=
+type: kubernetes.io/tls
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: argocd-argocd-application-controller
+subjects:
+  - kind: ServiceAccount
+    name: argocd-argocd-application-controller
+    namespace: own-argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-argocd-application-controller
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: argocd-argocd-redis
+subjects:
+  - kind: ServiceAccount
+    name: argocd-argocd-redis
+    namespace: own-argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-argocd-redis
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: argocd-argocd-redis-ha
+subjects:
+  - kind: ServiceAccount
+    name: argocd-argocd-redis-ha
+    namespace: own-argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-argocd-redis-ha
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: argocd-argocd-server
+subjects:
+  - kind: ServiceAccount
+    name: argocd-argocd-server
+    namespace: own-argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-argocd-server
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: argocd-argocd-application-controller
+subjects:
+  - kind: ServiceAccount
+    name: argocd-argocd-application-controller
+    namespace: own-argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: argocd-argocd-application-controller

@@ -1,0 +1,20 @@
+apiVersion: solace.broker.sbb.ch/v1alpha1
+kind: Broker
+metadata:
+  name: d-public
+spec:
+  name: aaa/bbb/ccc/d-public
+  config:
+    clientAuthentication:
+      oauth:
+        enabled: true
+      clientCertificate:
+        enabled:
+          smf: true
+    cleanUp:
+      general:
+        queue: DELETE
+        queueTemplate: DELETE
+        clientUsername: DELETE
+        clientProfile: DELETE
+        aclProfile: DELETE

@@ -1,0 +1,10 @@
+---
+# https://confluence.sbb.ch/display/CYBERSEC/ggshield
+# check .pre-commit-config.yaml and login
+
+# Required, otherwise ggshield considers the file to use the deprecated v1 format
+version: 2
+instance: https://gitguardian.sbb.ch  # default: https://dashboard.gitguardian.com
+
+# Accept self-signed certificates for the API
+allow-self-signed: true  # default: false

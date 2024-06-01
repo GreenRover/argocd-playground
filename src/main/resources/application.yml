@@ -1,0 +1,54 @@
+spring:
+  application:
+    name: ServiceDescriptionServiceStateOperator
+  profiles:
+    active: default
+    group:
+      default: kubernetes, solace
+
+operator:
+  debounceTime: PT20S
+  updateCheckScheduleDuration: PT10S
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "prometheus,health,info"
+    metrics:
+      enabled: true
+
+server:
+  port: ${HTTP_PORT:8490}
+
+logging:
+  group:
+    semp:
+      - com.solace.psg.sempv1
+      - com.solace.psg.sempv2
+    solace_shared:
+      - com.solace.psg.apiclient
+      - com.solace.psg.facade
+    solace_cloud:
+      - com.solace.psg.missioncontrol1
+      - com.solace.psg.missioncontrol2
+  level:
+    ch:
+      sbb: ${LOG_LEVEL:INFO}
+      sbb.micrometer: ${KPI_LOG_LEVEL:INFO}
+      sbb.monalesy: ${MONALESY_LOG_LEVEL:INFO}
+    org:
+      springframework:
+        web: ${LOG_LEVEL:INFO}
+        http:
+          client: ${LOG_LEVEL:INFO}
+    io:
+      javaoperatorsdk:
+        operator: ${OPENSHIFT_LOG_LEVEL:INFO}
+      fabric8: ${OPENSHIFT_LOG_LEVEL:INFO}
+    com:
+      solacesystems:
+        jcsmp: ${SOLACE_JCSMP_LOG_LEVEL:WARN}
+    solace_shared: ${SOLACE_SHARED_LOG_LEVEL:INFO}
+    semp: ${SOLACE_SEMP_LOG_LEVEL:INFO}
+    solace_cloud: ${SOLACE_CLOUD_LOG_LEVEL:INFO}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: app-of-apps
+description: Helm chart to configure the ArgoCD applications
+type: application
+version: 0.0.1
+icon: http://acme.org/replaceme.jpg
