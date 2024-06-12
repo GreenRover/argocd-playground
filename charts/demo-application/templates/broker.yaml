@@ -4,6 +4,8 @@ metadata:
   name: d-public
 spec:
   name: aaa/bbb/ccc/d-public
+  auth:
+    serviceAccount: oc-xyz
   config:
     clientAuthentication:
       oauth:

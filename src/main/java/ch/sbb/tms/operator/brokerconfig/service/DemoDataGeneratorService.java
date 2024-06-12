@@ -61,7 +61,7 @@ public class DemoDataGeneratorService {
                     playDemoDataQueueGhost(queue);
                     break;
                 case "demo-b":
-                    playDemoDataQueueSuccess(queue);
+                    playDemoDataQueueDifferent(queue);
                     break;
                 case "demo-c":
                     playDemoDataQueueFailed(queue);
@@ -84,6 +84,7 @@ public class DemoDataGeneratorService {
 
     @SneakyThrows
     public void playDemoDataQueueSuccess(BrokerConfigQueue queue) {
+        Thread.sleep(2_000);
         setStarted(queue);
 
         Thread.sleep(5_000);
@@ -94,10 +95,11 @@ public class DemoDataGeneratorService {
     }
 
     @SneakyThrows
-    public void playDemoDataQueueFailed(BrokerConfigQueue queue) {
+    public void playDemoDataQueueDifferent(BrokerConfigQueue queue) {
+        Thread.sleep(1_000);
         setStarted(queue);
 
-        Thread.sleep(10_000);
+        Thread.sleep(12_000);
 
         Queue q = new Queue();
         q.setMaxTtl(43656876L);
@@ -110,16 +112,30 @@ public class DemoDataGeneratorService {
                 .resource(queue)
                 .patch(PatchContext.of(PatchType.JSON_MERGE), toPatch));
 
-        setStatus(queue, BrokerStatusEnum.FAILED, "DemoDataGenerator failed");
+        setStatus(queue, BrokerStatusEnum.SYNCED, "DemoDataGenerator synced to broker");
+        log.info("DemoData: {}: set synced|different", queue.getMetadata()
+                                                  .getName());
+    }
+
+
+    @SneakyThrows
+    public void playDemoDataQueueFailed(BrokerConfigQueue queue) {
+        Thread.sleep(4_000);
+        setStarted(queue);
+
+        Thread.sleep(10_000);
+
+        setStatus(queue, BrokerStatusEnum.FAILED, "DemoDataGenerator unable to apply config response from broker: owner Blubber was not found");
         log.info("DemoData: {}: set failed", queue.getMetadata()
                                                   .getName());
     }
 
     @SneakyThrows
     public void playDemoDataQueueGhost(BrokerConfigQueue queue) {
+        Thread.sleep(5_000);
         setStarted(queue);
 
-        Thread.sleep(10_000);
+        Thread.sleep(13_000);
 
         // https://github.com/argoproj/argo-cd/blob/85ed1b96eaded150318348d2e6f468f11d2f32b3/ui/src/app/applications/components/utils.tsx#L742
         setStatus(queue, BrokerStatusEnum.MISSING, "DemoDataGenerator missing");
@@ -181,7 +197,7 @@ public class DemoDataGeneratorService {
 
                 log.warn("Error while run k8n change: {}", e.getMessage());
                 try {
-                    Thread.sleep(500);
+                    Thread.sleep(1000);
                 }
                 catch (InterruptedException ie) {
                     throw new RuntimeException(ie);

@@ -2,7 +2,8 @@ apiVersion: solace.broker.sbb.ch/v1alpha1
 kind: Queue
 metadata:
   name: demo-a
-
+  annotations:
+    tms.sbb.ch/solace.broker: d-public
 spec:
   queueName: internal/${brokerTopicPrefix}/applicationAbc
   accessType: EXCLUSIVE
